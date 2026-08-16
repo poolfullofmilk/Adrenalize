@@ -31,19 +31,11 @@ internal sealed class TrayManager : IDisposable
                 Program.PrintSettingsStatus();
             }
         );
-        AddItem(
-            contextMenu,
-            "Save",
-            () =>
-            {
-                Program.ShowConsoleWindow();
-                Program.SaveSettings();
-            }
-        );
+        AddItem(contextMenu, "Rescan Games", Program.RescanGames);
         contextMenu.Items.Add(new ToolStripSeparator());
 
-        _startupToggleItem = AddToggle(contextMenu, "Run on Startup", Program.SetStartup);
-        _trayToggleItem = AddToggle(contextMenu, "Minimize to Tray", Program.SetTray);
+        _startupToggleItem = AddToggle(contextMenu, "Run On Startup", Program.SetStartup);
+        _trayToggleItem = AddToggle(contextMenu, "Minimize To Tray", Program.SetTray);
         _startMinimizedToggleItem = AddToggle(
             contextMenu,
             "Start Minimized",

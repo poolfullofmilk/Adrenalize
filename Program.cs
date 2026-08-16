@@ -7,6 +7,7 @@ using Adrenalize.Game;
 using Adrenalize.Native;
 using Adrenalize.Startup;
 using Adrenalize.Tray;
+using Adrenalize.Utilities;
 using static Adrenalize.Utilities.Logger;
 
 namespace Adrenalize;
@@ -20,9 +21,14 @@ internal static class Program
 
     // Process Name To Display Name, Also The Running Game Lookup
     private static Dictionary<string, string> s_games = [];
+    private static HashSet<string> s_previouslyRunning = new(StringComparer.OrdinalIgnoreCase);
 
     private const string SingleInstanceMutexName = "Global\\Adrenalize_SingleInstance";
     private const string ShowConsoleEventName = "Global\\Adrenalize_ShowConsole";
+
+    // Process Scan Frequency And Delay Before Reset After Game Start
+    private static readonly TimeSpan s_pollInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan s_gameStartDelay = TimeSpan.FromSeconds(2);
 
     internal static UserSettings Settings { get; private set; } = new();
 
@@ -33,6 +39,7 @@ internal static class Program
         {
             GameScanner.SelfTest();
             UserSettings.SelfTest();
+            Logger.SelfTest();
             SelfTestNativeInterop();
             Console.WriteLine("SelfTest OK");
             return;
@@ -55,6 +62,8 @@ internal static class Program
 
             return;
         }
+
+        StartLogFile();
 
         using var showConsoleWaitHandle = new EventWaitHandle(
             initialState: false,
@@ -84,14 +93,7 @@ internal static class Program
         PrintSettingsStatus();
         PrintTrayHint();
 
-        s_games = GameScanner.ScanInstalledGameProcessNames();
-
-        var uniqueDisplayNames = s_games
-            .Values.Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        LogList($"Games Found: {uniqueDisplayNames.Count}", uniqueDisplayNames, ConsoleColor.Cyan);
+        ScanGames();
 
         // Snap The Window To Fit Everything Printed
         try
@@ -111,7 +113,7 @@ internal static class Program
         }
 
         if (Settings.StartMinimized)
-            HideConsoleWindow();
+            SetConsoleWindowState(NativeMethods.ShowWindowHide);
 
         // Ctrl+C Must Not Kill The App
         Console.CancelKeyPress += (_, cancelEventArgs) => cancelEventArgs.Cancel = true;
@@ -139,9 +141,6 @@ internal static class Program
 
         if (!enumerated || seenWindows == 0)
             throw new InvalidOperationException("SelfTest Failed: EnumWindows");
-
-        // Fails Harmlessly When Standard Input Is Redirected
-        DisableConsoleInput();
     }
     #endregion
 
@@ -221,34 +220,26 @@ internal static class Program
 
     internal static void ShowConsoleWindow() =>
         SetConsoleWindowState(NativeMethods.ShowWindowRestore);
-
-    private static void HideConsoleWindow() => SetConsoleWindowState(NativeMethods.ShowWindowHide);
     #endregion
 
     #region Settings
-    internal static void SaveSettings()
-    {
-        Settings.Save();
-        Log("Settings Saved", ConsoleColor.Green);
-    }
-
     internal static void SetStartup(bool value)
     {
         Settings.StartupEnabled = value;
         ApplyStartupRegistration();
-        SaveAndLogFlag("Startup", value);
+        SaveAndLogFlag("Run On Startup", value);
     }
 
     internal static void SetTray(bool value)
     {
         Settings.MinimizeToTray = value;
-        SaveAndLogFlag("MinimizeToTray", value);
+        SaveAndLogFlag("Minimize To Tray", value);
     }
 
     internal static void SetStartMinimized(bool value)
     {
         Settings.StartMinimized = value;
-        SaveAndLogFlag("StartMinimized", value);
+        SaveAndLogFlag("Start Minimized", value);
     }
 
     internal static void SetNotifications(bool value)
@@ -260,7 +251,7 @@ internal static class Program
     private static void SaveAndLogFlag(string name, bool value)
     {
         Settings.Save();
-        Log($"{name} Set To {value}", ConsoleColor.Cyan);
+        Log($"{name} Set To {(value ? "TRUE" : "FALSE")}", ConsoleColor.Cyan);
     }
 
     private static void ApplyStartupRegistration()
@@ -310,6 +301,9 @@ internal static class Program
         Console.ForegroundColor = ConsoleColor.DarkGray;
         Console.WriteLine("Issues And Features");
         Console.WriteLine("https://github.com/poolfullofmilk/Adrenalize");
+        Console.WriteLine();
+        Console.WriteLine("Log File");
+        Console.WriteLine(s_logFilePath);
         Console.ResetColor();
         Console.WriteLine();
     }
@@ -318,9 +312,9 @@ internal static class Program
     {
         (string Label, bool Value)[] flags =
         [
-            ("Startup", Settings.StartupEnabled),
-            ("MinimizeToTray", Settings.MinimizeToTray),
-            ("StartMinimized", Settings.StartMinimized),
+            ("Run On Startup", Settings.StartupEnabled),
+            ("Minimize To Tray", Settings.MinimizeToTray),
+            ("Start Minimized", Settings.StartMinimized),
             ("Notifications", Settings.NotificationsEnabled),
         ];
 
@@ -328,14 +322,14 @@ internal static class Program
         Console.WriteLine("Current Status");
 
         foreach (var (label, value) in flags)
-            Console.WriteLine($"  {label + ":", -16}{(value ? "TRUE" : "FALSE")}");
+            Console.WriteLine($"  {label + ":", -18}{(value ? "TRUE" : "FALSE")}");
 
         Console.ResetColor();
-        Console.WriteLine();
     }
 
     private static void PrintTrayHint()
     {
+        Console.WriteLine();
         Console.ForegroundColor = ConsoleColor.DarkGray;
         Console.WriteLine("Controls");
         Console.WriteLine("  Right Click The Tray Icon For Reset, Status, Settings And Exit");
@@ -346,17 +340,41 @@ internal static class Program
     #endregion
 
     #region Monitoring
+    private static void ScanGames()
+    {
+        s_games = GameScanner.ScanInstalledGameProcessNames();
+
+        var uniqueDisplayNames = s_games
+            .Values.Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        Log($"Games Found: {uniqueDisplayNames.Count}");
+
+        foreach (var displayName in uniqueDisplayNames)
+            LogItem(displayName, ConsoleColor.Cyan);
+    }
+
+    internal static void RescanGames()
+    {
+        ShowConsoleWindow();
+        ScanGames();
+
+        // Newly Found Games Already Running Must Not Reset
+        s_previouslyRunning = GetRunningGameProcesses();
+
+        Log("Watching For Games", ConsoleColor.Gray);
+    }
+
     private static async Task RunMonitoringLoopAsync()
     {
-        Log("Watching for Games", ConsoleColor.Gray);
-
-        var previouslyRunning = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Log("Watching For Games", ConsoleColor.Gray);
 
         while (true)
         {
             var currentlyRunning = GetRunningGameProcesses();
             var startedProcessName = currentlyRunning.FirstOrDefault(name =>
-                !previouslyRunning.Contains(name)
+                !s_previouslyRunning.Contains(name)
             );
 
             if (startedProcessName is not null)
@@ -368,8 +386,8 @@ internal static class Program
                 _ = TryTriggerResetAsync(displayName, isManual: false);
             }
 
-            previouslyRunning = currentlyRunning;
-            await Task.Delay(AppConfig.s_pollInterval).ConfigureAwait(false);
+            s_previouslyRunning = currentlyRunning;
+            await Task.Delay(s_pollInterval).ConfigureAwait(false);
         }
     }
 
@@ -407,22 +425,22 @@ internal static class Program
 
             if (!isManual)
             {
-                await Task.Delay(AppConfig.s_gameStartDelay).ConfigureAwait(false);
+                await Task.Delay(s_gameStartDelay).ConfigureAwait(false);
 
                 // Abort If The Game Closed During The Delay
                 if (GetRunningGameProcesses().Count == 0)
                 {
                     Log("Game Closed Before Reset", ConsoleColor.DarkYellow);
-                    Log("Watching for Games", ConsoleColor.Gray);
+                    Log("Watching For Games", ConsoleColor.Gray);
                     return;
                 }
             }
 
             AmdReset.ExecuteReset();
             Log("Reset Done", ConsoleColor.Green);
-            Log("Watching for Games", ConsoleColor.Gray);
+            Log("Watching For Games", ConsoleColor.Gray);
 
-            s_trayManager?.ShowBalloonTip("Adrenalize", $"Reset Done for {startedDisplayName}");
+            s_trayManager?.ShowBalloonTip("Adrenalize", $"Reset Done For {startedDisplayName}");
         }
         finally
         {

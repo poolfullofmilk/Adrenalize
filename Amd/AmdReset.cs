@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Management;
 using System.Runtime.Versioning;
-using Adrenalize.Configuration;
+using System.ServiceProcess;
 using Adrenalize.Native;
 using static Adrenalize.Utilities.Logger;
 
@@ -10,6 +10,25 @@ namespace Adrenalize.Amd;
 [SupportedOSPlatform("windows")]
 internal static class AmdReset
 {
+    // Adrenalin Executable Paths
+    private static readonly string[] s_adrenalinExecutablePaths =
+    [
+        @"C:\Program Files\AMD\CNext\CNext\RadeonSoftware.exe",
+        @"C:\Program Files\AMD\CNext\CNext\RadeonSettings.exe",
+    ];
+
+    // AMD Service And Process Keywords
+    private static readonly string[] s_amdKeywords = ["AMD", "Radeon"];
+
+    // AMD Executable Path Markers
+    private static readonly string[] s_amdExecutablePathMarkers =
+    [
+        @"\AMD\",
+        @"\Radeon\",
+        @"\Advanced Micro Devices\",
+        @"\CNext\",
+    ];
+
     #region Reset
     internal static void ExecuteReset()
     {
@@ -28,9 +47,7 @@ internal static class AmdReset
     }
 
     private static bool ContainsAmdKeyword(string text) =>
-        AppConfig.s_amdKeywords.Any(keyword =>
-            text.Contains(keyword, StringComparison.OrdinalIgnoreCase)
-        );
+        s_amdKeywords.Any(keyword => text.Contains(keyword, StringComparison.OrdinalIgnoreCase));
     #endregion
 
     #region Processes
@@ -91,7 +108,7 @@ internal static class AmdReset
             // Some AMD Binaries Are Named Differently
             var executablePath = processInstance.MainModule?.FileName;
             return executablePath is not null
-                && AppConfig.s_amdExecutablePathMarkers.Any(marker =>
+                && s_amdExecutablePathMarkers.Any(marker =>
                     executablePath.Contains(marker, StringComparison.OrdinalIgnoreCase)
                 );
         }
@@ -116,7 +133,11 @@ internal static class AmdReset
         foreach (var serviceName in stoppedServiceNames)
             LogItem(serviceName, ConsoleColor.Yellow);
 
-        WaitForServiceStates(stoppedServiceNames, "Stopped", TimeSpan.FromSeconds(15));
+        WaitForServiceStates(
+            stoppedServiceNames,
+            ServiceControllerStatus.Stopped,
+            TimeSpan.FromSeconds(15)
+        );
         return stoppedServiceNames;
     }
 
@@ -135,7 +156,11 @@ internal static class AmdReset
         foreach (var serviceName in startedServiceNames)
             LogItem(serviceName, ConsoleColor.Green);
 
-        WaitForServiceStates(startedServiceNames, "Running", TimeSpan.FromSeconds(10));
+        WaitForServiceStates(
+            startedServiceNames,
+            ServiceControllerStatus.Running,
+            TimeSpan.FromSeconds(10)
+        );
     }
 
     private static List<string> InvokeOnServices(
@@ -178,60 +203,36 @@ internal static class AmdReset
 
     private static void WaitForServiceStates(
         List<string> serviceNames,
-        string targetState,
+        ServiceControllerStatus targetStatus,
         TimeSpan timeout
     )
     {
-        if (serviceNames.Count == 0)
-            return;
-
+        // One Shared Deadline, Not One Per Service
         var deadlineUtc = DateTime.UtcNow.Add(timeout);
 
-        while (DateTime.UtcNow < deadlineUtc)
+        foreach (var serviceName in serviceNames)
         {
-            var currentStates = GetServiceStates();
-            var allReached = serviceNames.All(serviceName =>
-                !currentStates.TryGetValue(serviceName, out var state)
-                || state.Equals(targetState, StringComparison.OrdinalIgnoreCase)
-            );
-
-            if (allReached)
+            var remaining = deadlineUtc - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
                 return;
 
-            Thread.Sleep(250);
-        }
-    }
-
-    private static Dictionary<string, string> GetServiceStates()
-    {
-        var states = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        try
-        {
-            using var searcher = new ManagementObjectSearcher(
-                "SELECT Name, State FROM Win32_Service"
-            );
-
-            foreach (var service in searcher.Get().Cast<ManagementObject>())
+            try
             {
-                using (service)
-                {
-                    var name = service["Name"]?.ToString();
-                    if (!string.IsNullOrEmpty(name))
-                        states[name] = service["State"]?.ToString() ?? string.Empty;
-                }
+                using var serviceController = new ServiceController(serviceName);
+                serviceController.WaitForStatus(targetStatus, remaining);
+            }
+            catch
+            {
+                // A Timeout Or A Vanished Service Must Not Stop The Reset
             }
         }
-        catch { }
-
-        return states;
     }
     #endregion
 
     #region Adrenalin
     private static bool StartAdrenalin()
     {
-        var executablePath = AppConfig.s_adrenalinExecutablePaths.FirstOrDefault(File.Exists);
+        var executablePath = s_adrenalinExecutablePaths.FirstOrDefault(File.Exists);
         if (executablePath is null)
         {
             Log("Adrenalin Not Found", ConsoleColor.Red);

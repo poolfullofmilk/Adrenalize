@@ -8,25 +8,19 @@ namespace Adrenalize.Game;
 [SupportedOSPlatform("windows")]
 internal static partial class GameScanner
 {
-    // Executable Name Tokens That Disqualify A Match
+    // Executable Name Tokens That Never Compete
     private static readonly string[] s_executableRejectTokens =
     [
         "helper",
         "service",
         "crash",
         "report",
-    ];
-
-    // Executable Name Tokens Costing Five Points Each
-    private static readonly string[] s_executablePenaltyTokens =
-    [
-        "launcher",
-        "helper",
-        "crash",
-        "report",
         "uninstall",
         "setup",
     ];
+
+    // Executable Name Tokens Costing Five Points Each
+    private static readonly string[] s_executablePenaltyTokens = ["launcher"];
 
     // Executable Name Tokens Earning Three Points Each
     private static readonly string[] s_executableBonusTokens = ["win64", "shipping"];
@@ -41,12 +35,12 @@ internal static partial class GameScanner
         @"game\bin\win64",
         @"live\ShooterGame\Binaries\Win64",
     ];
-    internal static readonly string[] s_steamRoot =
+    private static readonly string[] s_steamRoot =
     [
         @"C:\Program Files (x86)\Steam",
         @"C:\Program Files\Steam",
     ];
-    internal static readonly string[] s_commonGameRoots = [@"C:\Games", @"D:\Games", @"E:\Games"];
+    private static readonly string[] s_commonGameRoots = [@"C:\Games", @"D:\Games", @"E:\Games"];
 
     #region Scan
     internal static Dictionary<string, string> ScanInstalledGameProcessNames()
@@ -84,12 +78,6 @@ internal static partial class GameScanner
             return;
 
         var executableName = Path.GetFileNameWithoutExtension(executablePath);
-        var isRejected = s_executableRejectTokens.Any(token =>
-            executableName.Contains(token, StringComparison.OrdinalIgnoreCase)
-        );
-        if (isRejected)
-            return;
-
         var processName = NormalizeProcessKey(executableName);
         if (string.IsNullOrWhiteSpace(processName))
             return;
@@ -118,6 +106,10 @@ internal static partial class GameScanner
 
             foreach (var executablePath in EnumerateFilesSafely(probeDirectory, "*.exe"))
             {
+                // Vetoed Names Never Compete, So The Runner Up Survives
+                if (IsRejectedExecutable(executablePath))
+                    continue;
+
                 var score = ScoreExecutable(executablePath, folderName);
                 if (score > bestScore)
                 {
@@ -128,6 +120,15 @@ internal static partial class GameScanner
         }
 
         return bestExecutablePath;
+    }
+
+    private static bool IsRejectedExecutable(string executablePath)
+    {
+        var executableName = Path.GetFileNameWithoutExtension(executablePath);
+
+        return s_executableRejectTokens.Any(token =>
+            executableName.Contains(token, StringComparison.OrdinalIgnoreCase)
+        );
     }
 
     private static int ScoreExecutable(string executablePath, string folderName)
@@ -541,6 +542,18 @@ internal static partial class GameScanner
 
         if (gameScore <= launcherScore)
             throw new InvalidOperationException("SelfTest Failed: ScoreExecutable");
+
+        // Vetoed Names Must Be Dropped Before Scoring
+        var rejected = new[]
+        {
+            @"C:\Games\Rust\RustCrashHandler.exe",
+            @"C:\Games\Rust\Uninstall.exe",
+            @"C:\Games\Rust\EasyAntiCheat_Setup.exe",
+            @"C:\Games\Rust\SomeService.exe",
+        };
+
+        if (!rejected.All(IsRejectedExecutable) || IsRejectedExecutable(@"C:\Games\Rust\Rust.exe"))
+            throw new InvalidOperationException("SelfTest Failed: IsRejectedExecutable");
     }
     #endregion
 

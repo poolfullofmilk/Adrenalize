@@ -12,9 +12,9 @@ internal sealed class UserSettings
         "settings.ini"
     );
 
-    internal bool StartupEnabled { get; set; } = false;
+    internal bool StartupEnabled { get; set; }
     internal bool MinimizeToTray { get; set; } = true;
-    internal bool StartMinimized { get; set; } = false;
+    internal bool StartMinimized { get; set; }
     internal bool NotificationsEnabled { get; set; } = true;
 
     internal static UserSettings Load()
