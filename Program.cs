@@ -16,8 +16,6 @@ internal static class Program
 {
     // Guards Against Overlapping Resets
     private static int s_pendingResetFlag;
-
-    private static UserSettings s_userSettings = new();
     private static TrayManager? s_trayManager;
 
     // Process Name To Display Name, Also The Running Game Lookup
@@ -26,7 +24,7 @@ internal static class Program
     private const string SingleInstanceMutexName = "Global\\Adrenalize_SingleInstance";
     private const string ShowConsoleEventName = "Global\\Adrenalize_ShowConsole";
 
-    internal static UserSettings Settings => s_userSettings;
+    internal static UserSettings Settings { get; private set; } = new();
 
     #region Entry Point
     private static async Task Main(string[] args)
@@ -65,11 +63,11 @@ internal static class Program
         );
         _ = Task.Run(() => WatchForShowConsoleSignal(showConsoleWaitHandle));
 
-        s_userSettings = UserSettings.Load();
+        Settings = UserSettings.Load();
         ApplyStartupRegistration();
 
         // Dropping Close Makes The X Hide Instantly
-        if (s_userSettings.MinimizeToTray)
+        if (Settings.MinimizeToTray)
             RemoveConsoleCloseButton();
 
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
@@ -112,7 +110,7 @@ internal static class Program
             return;
         }
 
-        if (s_userSettings.StartMinimized)
+        if (Settings.StartMinimized)
             HideConsoleWindow();
 
         // Ctrl+C Must Not Kill The App
@@ -204,7 +202,7 @@ internal static class Program
         {
             await Task.Delay(150).ConfigureAwait(false);
 
-            if (!s_userSettings.MinimizeToTray)
+            if (!Settings.MinimizeToTray)
                 continue;
 
             // Redirect Minimize To The Tray
@@ -230,44 +228,44 @@ internal static class Program
     #region Settings
     internal static void SaveSettings()
     {
-        s_userSettings.Save();
+        Settings.Save();
         Log("Settings Saved", ConsoleColor.Green);
     }
 
     internal static void SetStartup(bool value)
     {
-        s_userSettings.StartupEnabled = value;
+        Settings.StartupEnabled = value;
         ApplyStartupRegistration();
         SaveAndLogFlag("Startup", value);
     }
 
     internal static void SetTray(bool value)
     {
-        s_userSettings.MinimizeToTray = value;
+        Settings.MinimizeToTray = value;
         SaveAndLogFlag("MinimizeToTray", value);
     }
 
     internal static void SetStartMinimized(bool value)
     {
-        s_userSettings.StartMinimized = value;
+        Settings.StartMinimized = value;
         SaveAndLogFlag("StartMinimized", value);
     }
 
     internal static void SetNotifications(bool value)
     {
-        s_userSettings.NotificationsEnabled = value;
+        Settings.NotificationsEnabled = value;
         SaveAndLogFlag("Notifications", value);
     }
 
     private static void SaveAndLogFlag(string name, bool value)
     {
-        s_userSettings.Save();
+        Settings.Save();
         Log($"{name} Set To {value}", ConsoleColor.Cyan);
     }
 
     private static void ApplyStartupRegistration()
     {
-        if (s_userSettings.StartupEnabled)
+        if (Settings.StartupEnabled)
             StartupManager.Enable();
         else
             StartupManager.Disable();
@@ -320,10 +318,10 @@ internal static class Program
     {
         (string Label, bool Value)[] flags =
         [
-            ("Startup", s_userSettings.StartupEnabled),
-            ("MinimizeToTray", s_userSettings.MinimizeToTray),
-            ("StartMinimized", s_userSettings.StartMinimized),
-            ("Notifications", s_userSettings.NotificationsEnabled),
+            ("Startup", Settings.StartupEnabled),
+            ("MinimizeToTray", Settings.MinimizeToTray),
+            ("StartMinimized", Settings.StartMinimized),
+            ("Notifications", Settings.NotificationsEnabled),
         ];
 
         Console.ForegroundColor = ConsoleColor.DarkGray;

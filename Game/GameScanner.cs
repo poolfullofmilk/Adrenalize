@@ -41,6 +41,12 @@ internal static partial class GameScanner
         @"game\bin\win64",
         @"live\ShooterGame\Binaries\Win64",
     ];
+    internal static readonly string[] s_steamRoot =
+    [
+        @"C:\Program Files (x86)\Steam",
+        @"C:\Program Files\Steam",
+    ];
+    internal static readonly string[] s_commonGameRoots = [@"C:\Games", @"D:\Games", @"E:\Games"];
 
     #region Scan
     internal static Dictionary<string, string> ScanInstalledGameProcessNames()
@@ -150,16 +156,11 @@ internal static partial class GameScanner
     #region Steam
     private static IEnumerable<(string DisplayName, string Root)> DiscoverSteamGames()
     {
-        var steamRoot = new[]
-        {
-            @"C:\Program Files (x86)\Steam",
-            @"C:\Program Files\Steam",
-        }.FirstOrDefault(Directory.Exists);
-
-        if (steamRoot is null)
+        var primarySteamRoot = s_steamRoot.FirstOrDefault(Directory.Exists);
+        if (primarySteamRoot is null)
             yield break;
 
-        var libraryFoldersPath = Path.Combine(steamRoot, "steamapps", "libraryfolders.vdf");
+        var libraryFoldersPath = Path.Combine(primarySteamRoot, "steamapps", "libraryfolders.vdf");
         if (!File.Exists(libraryFoldersPath))
             yield break;
 
@@ -420,7 +421,7 @@ internal static partial class GameScanner
 
     #region Common Directories
     private static IEnumerable<string> DiscoverCommonGamesDirectories() =>
-        new[] { @"C:\Games", @"D:\Games", @"E:\Games" }.SelectMany(EnumerateDirectoriesSafely);
+        s_commonGameRoots.SelectMany(EnumerateDirectoriesSafely);
     #endregion
 
     #region File System
