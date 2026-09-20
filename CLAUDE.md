@@ -1,16 +1,6 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository.
-
-## Reporting Back
-
-Keep answers short. One small summary of what changed and what it means, and stop there. No walls of text, no per-file tour, no restating the plan, no listing everything that was verified. If something genuinely needs detail, put it in CLAUDE.md and say one line about it here. Long output does not get read.
-
-## Git
-
-Work directly on `master`. Never create a branch or a worktree unless explicitly asked to.
-
-Keep every change local. Never push, and never open a pull request, unless explicitly asked to.
+Guidance for Claude Code when working in this repository. Personal rules that apply everywhere — reporting style, git and commit rules, comment style, naming, regions, Razor and MudBlazor conventions, CSharpier and RazorStyle — live in `~/.claude/CLAUDE.md`. Only what is specific to Adrenalize is written here.
 
 ## What This Is
 
@@ -46,7 +36,7 @@ Anything past parsing, scoring, and settings needs a real machine with AMD hardw
 
 ## Shipping A Single Executable
 
-Release builds are named `Adrenalize_v<version>.exe`, matching `<Version>` in the `.csproj`. The version is always major and minor with a single digit after the dot: `1.7`, never `1.7.0`. Bump the minor for every shipped change, rename the published exe to match, and do not leave an unversioned `Adrenalize.exe` behind.
+Release builds take their version from `<Version>` in the `.csproj`, and the published exe is renamed to match before it is attached to a release.
 
 One command. No packaging step, no installer, no extra tooling:
 
@@ -176,60 +166,10 @@ These weights are tuning against real installs, not a general algorithm, adjust 
 
 **There is no cancellation plumbing.** The app exits through `Environment.Exit(0)`. Background loops are `while (true)` and die with the process. A previous Restart Monitoring feature existed, cancelled and respawned the loops, did not re-scan games, and re-fired a reset for whatever was already running. It was removed.
 
-## Comment Style
-
-Comments are very short and clear, a couple of words. Up to eight or ten words when genuinely needed, never more. Never write a long or multi-line comment. Every word starts with a capital letter. Comments do not end with punctuation. A comment always sits on its own line above the code it describes.
-
-```csharp
-// Never Kill Ourselves
-if (processInstance.Id == Environment.ProcessId)
-    return false;
-```
-
-In C#, comments are allowed only inside method bodies, or above a group of related fields or properties. Do not comment obvious code. Do not comment classes, interfaces, models, view models, or services. No XML documentation comments. Do not add comments to `.csproj` files. Do not write a comment that explains something to the reader of the conversation, that is not what comments are for.
-
-In Razor markup, only comment above a group or chunk of components or elements, and the comment contains only the main component or element name of that group. Use the Razor comment syntax.
-
-```razor
-@* Records Table *@
-<MudTable>
-...
-</MudTable>
-
-@* Save Button *@
-<MudButton>
-...
-</MudButton>
-```
-
-Do not write descriptive Razor comments. Do not put a Razor comment above text, parameters, bindings, individual attributes, or small markup fragments.
-
-The same rule covers user-facing text: console output, tray labels, balloon tips, localization strings, helper text, titles, labels, and validation messages. Keep it short and clear, start each word with a capital letter, and do not end it with punctuation.
-
-## Code Style
-
-**Naming.** Every variable, field, property, and method uses a full descriptive name. No abbreviations, no single letters. Use `settings`, not `s`. Use `configuration`, not `cfg`. Use `executablePath`, not `exePath`. Names say what the thing is for. Static fields use the `s_` prefix, instance fields use the underscore prefix, constants are PascalCase.
-
-**Regions.** Only around methods, never around fields or properties. Only when there is a reason for two or more, never a single region on its own. No blank line directly after a region opener or directly before its closer. One blank line before the opener and one after the closer.
-
-```csharp
-    #region Services
-    private static List<string> StopAmdServices()
-    {
-    }
-    #endregion
-```
-
-**Razor and UI.** No Razor files exist here yet, these apply if any are added. Use MudBlazor components wherever possible. When MudBlazor has no suitable component, use Bootstrap classes. When Bootstrap is also insufficient, use the `Style` property of a MudBlazor component. Custom CSS is the last option. Prefer `MudElement` over plain HTML elements when no MudBlazor component fits, and treat a plain HTML element as the last option too.
-
-**Code-behind.** A Razor component uses its code-behind file when one exists. Never add a code block to a Razor file that has a matching `.razor.cs`. All component logic lives in the code-behind.
-
 ## Working Here
 
-Before changing anything, inspect every related file: the file you are touching, its callers, code-behind files, services, models, interfaces, registrations, and the project file. Do not assume the architecture. This codebase is small enough to hold in your head, so read it instead of guessing.
+This codebase is small enough to hold in your head, so read it instead of guessing. This repository has been audited for over-engineering three times and lost roughly a third of its lines: dead configuration arrays, unused P/Invoke declarations, wrapper classes that only delegated, an unreachable elevation path, four utility files that each existed for one caller, seven single-file folders, and ninety lines of `.editorconfig` that changed no diagnostic. Do not reintroduce that shape.
 
-Prefer deleting to adding. This repository has been audited for over-engineering three times and lost roughly a third of its lines: dead configuration arrays, unused P/Invoke declarations, wrapper classes that only delegated, an unreachable elevation path, four utility files that each existed for one caller, seven single-file folders, and ninety lines of `.editorconfig` that changed no diagnostic. Do not reintroduce that shape. No interface with one implementation, no factory for one product, no configuration value nobody sets, no single-element array where a direct check reads better.
-
-Reach for the standard library and the platform before writing code, and before adding a package. The three dependencies all earn their place: `System.Management` for WMI service discovery and control, `System.ServiceProcess.ServiceController` for waiting on service state, and `TaskScheduler` for both the logon-without-UAC requirement and the de-elevated Adrenalin launch.
+The three dependencies all earn their place: `System.Management` for WMI service discovery and control, `System.ServiceProcess.ServiceController` for waiting on service state, and `TaskScheduler` for both the logon-without-UAC requirement and the de-elevated Adrenalin launch.
 
 Verify with `dotnet build`, the `--selftest` run, and `csharpier format .`. All three, every time.
