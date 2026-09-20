@@ -10,9 +10,7 @@ namespace Adrenalize;
 [SupportedOSPlatform("windows")]
 internal static class AmdReset
 {
-    // Adrenalin Install Locations
-    private const string AdrenalinExecutablePath =
-        @"C:\Program Files\AMD\CNext\CNext\RadeonSoftware.exe";
+    // AMD's Own Command Line, Used To Start And Hide Adrenalin
     private const string AdrenalinCommandPath = @"C:\Program Files\AMD\CNext\CNext\cncmd.exe";
 
     // Temporary Task Used To Drop Elevation
@@ -287,19 +285,20 @@ internal static class AmdReset
     #region Adrenalin
     private static bool StartAdrenalin()
     {
-        if (!File.Exists(AdrenalinExecutablePath))
+        if (!File.Exists(AdrenalinCommandPath))
         {
             Log("Adrenalin Not Found", ConsoleColor.Red);
             return false;
         }
 
-        if (!RunAsSignedInUser(AdrenalinExecutablePath, arguments: ""))
+        // The Logon Command Starts Adrenalin Without Ever Drawing A Window
+        if (!RunAsSignedInUser(AdrenalinCommandPath, "startwithdelay"))
         {
             Log("Adrenalin Start Failed", ConsoleColor.Red);
             return false;
         }
 
-        var deadlineUtc = DateTime.UtcNow.AddSeconds(15);
+        var deadlineUtc = DateTime.UtcNow.AddSeconds(60);
 
         while (DateTime.UtcNow < deadlineUtc)
         {
@@ -349,39 +348,51 @@ internal static class AmdReset
 
     private static void HideAdrenalin()
     {
-        var deadlineUtc = DateTime.UtcNow.AddSeconds(20);
+        var deadlineUtc = DateTime.UtcNow.AddSeconds(15);
+        var adrenalinProcessIds = GetAdrenalinProcessIds();
+        var hidAnyWindow = false;
+        var passes = 0;
+        var quietPasses = 0;
 
-        // Adrenalin Shows Its Window Late, Or Stays In The Background
+        // Insurance Only, The Logon Command Should Never Draw A Window
         while (DateTime.UtcNow < deadlineUtc)
         {
-            if (GetAdrenalinWindowHandles().Count == 0)
+            // Adrenalin Relaunches Itself, Refresh The Owners Every Second
+            if (passes++ % 10 == 0)
+                adrenalinProcessIds = GetAdrenalinProcessIds();
+
+            var windowHandles = GetAdrenalinWindowHandles(adrenalinProcessIds);
+
+            if (windowHandles.Count > 0)
             {
-                Thread.Sleep(200);
+                // Hide First So Nothing Flashes, Then Tell Adrenalin Itself
+                foreach (var windowHandle in windowHandles)
+                    NativeMethods.ShowWindow(windowHandle, NativeMethods.ShowWindowHide);
+
+                if (File.Exists(AdrenalinCommandPath))
+                    RunAsSignedInUser(AdrenalinCommandPath, "hide");
+
+                hidAnyWindow = true;
+                quietPasses = 0;
                 continue;
             }
 
-            if (!File.Exists(AdrenalinCommandPath))
-            {
-                Log("Hide Command Not Found", ConsoleColor.DarkYellow);
-                return;
-            }
+            // Stop Once Nothing Reappears For Five Seconds
+            if (hidAnyWindow && ++quietPasses >= 50)
+                break;
 
-            RunAsSignedInUser(AdrenalinCommandPath, "hide");
-
-            if (GetAdrenalinWindowHandles().Count == 0)
-            {
-                Log("Adrenalin Hidden", ConsoleColor.Green);
-                return;
-            }
+            Thread.Sleep(100);
         }
 
-        Log("Adrenalin Running In The Background", ConsoleColor.Green);
+        if (hidAnyWindow)
+            Log("Adrenalin Window Hidden", ConsoleColor.DarkYellow);
+        else
+            Log("Adrenalin Running In The Background", ConsoleColor.Green);
     }
 
-    private static List<IntPtr> GetAdrenalinWindowHandles()
+    private static List<IntPtr> GetAdrenalinWindowHandles(HashSet<uint> adrenalinProcessIds)
     {
         var windowHandles = new List<IntPtr>();
-        var adrenalinProcessIds = GetAdrenalinProcessIds();
         if (adrenalinProcessIds.Count == 0)
             return windowHandles;
 
