@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Adrenalize.Utilities;
+namespace Adrenalize;
 
 internal static class Logger
 {

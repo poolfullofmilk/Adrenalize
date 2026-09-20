@@ -1,17 +1,14 @@
 using System.Runtime.Versioning;
 
-namespace Adrenalize.Tray;
+namespace Adrenalize;
 
 [SupportedOSPlatform("windows")]
 internal sealed class TrayManager : IDisposable
 {
     private readonly NotifyIcon _notifyIcon;
 
-    // Toggles Refreshed Each Time The Menu Opens
-    private readonly ToolStripMenuItem _startupToggleItem;
-    private readonly ToolStripMenuItem _trayToggleItem;
-    private readonly ToolStripMenuItem _startMinimizedToggleItem;
-    private readonly ToolStripMenuItem _notificationsToggleItem;
+    // Refreshed Each Time The Menu Opens
+    private readonly List<ToolStripMenuItem> _toggleItems = [];
 
     internal TrayManager()
     {
@@ -34,18 +31,18 @@ internal sealed class TrayManager : IDisposable
         AddItem(contextMenu, "Rescan Games", Program.RescanGames);
         contextMenu.Items.Add(new ToolStripSeparator());
 
-        _startupToggleItem = AddToggle(contextMenu, "Run On Startup", Program.SetStartup);
-        _trayToggleItem = AddToggle(contextMenu, "Minimize To Tray", Program.SetTray);
-        _startMinimizedToggleItem = AddToggle(
-            contextMenu,
-            "Start Minimized",
-            Program.SetStartMinimized
-        );
-        _notificationsToggleItem = AddToggle(
-            contextMenu,
-            "Notifications",
-            Program.SetNotifications
-        );
+        for (var index = 0; index < Program.SettingToggles.Length; index++)
+        {
+            var toggleIndex = index;
+            var item = new ToolStripMenuItem(Program.SettingToggles[index].Label)
+            {
+                CheckOnClick = true,
+            };
+            item.Click += (_, _) => Program.ApplySettingToggle(toggleIndex, item.Checked);
+            contextMenu.Items.Add(item);
+            _toggleItems.Add(item);
+        }
+
         contextMenu.Items.Add(new ToolStripSeparator());
 
         AddItem(contextMenu, "Exit", Program.ExitApplication);
@@ -68,18 +65,6 @@ internal sealed class TrayManager : IDisposable
         menu.Items.Add(item);
     }
 
-    private static ToolStripMenuItem AddToggle(
-        ContextMenuStrip menu,
-        string text,
-        Action<bool> onToggle
-    )
-    {
-        var item = new ToolStripMenuItem(text) { CheckOnClick = true };
-        item.Click += (_, _) => onToggle(item.Checked);
-        menu.Items.Add(item);
-        return item;
-    }
-
     internal void ShowBalloonTip(string title, string message)
     {
         if (!Program.Settings.NotificationsEnabled)
@@ -93,11 +78,8 @@ internal sealed class TrayManager : IDisposable
 
     private void RefreshToggleStates()
     {
-        var settings = Program.Settings;
-        _startupToggleItem.Checked = settings.StartupEnabled;
-        _trayToggleItem.Checked = settings.MinimizeToTray;
-        _startMinimizedToggleItem.Checked = settings.StartMinimized;
-        _notificationsToggleItem.Checked = settings.NotificationsEnabled;
+        for (var index = 0; index < _toggleItems.Count; index++)
+            _toggleItems[index].Checked = Program.SettingToggles[index].Read();
     }
 
     public void Dispose()

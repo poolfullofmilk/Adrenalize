@@ -2,9 +2,15 @@
 
 Guidance for Claude Code when working in this repository.
 
+## Reporting Back
+
+Keep answers short. One small summary of what changed and what it means, and stop there. No walls of text, no per-file tour, no restating the plan, no listing everything that was verified. If something genuinely needs detail, put it in CLAUDE.md and say one line about it here. Long output does not get read.
+
 ## Git
 
 Work directly on `master`. Never create a branch or a worktree unless explicitly asked to.
+
+Keep every change local. Never push, and never open a pull request, unless explicitly asked to.
 
 ## What This Is
 
@@ -12,7 +18,9 @@ A single-project .NET 10 Windows console application that watches for a game pro
 
 The problem it solves: AMD Adrenalin's overlay, performance metrics, and driver hooks frequently fail to attach when a game launches. Restarting the whole Adrenalin stack (services first, then processes, then the app) after the game is already running makes it attach reliably. Doing that by hand every session is tedious, so this automates it.
 
-It is deliberately a console app with a tray icon rather than a GUI app. The console is a read-only status display — it prints what it found and what it is doing, and accepts no input. Every action lives in the tray icon's context menu. The tray icon also lets the window be hidden without killing the process.
+It is deliberately a console app with a tray icon rather than a GUI app. The console is a read-only status display, it prints what it found and what it is doing, and accepts no input. Every action lives in the tray icon's context menu. The tray icon also lets the window be hidden without killing the process.
+
+Every source file sits at the repository root in one `Adrenalize` namespace. There are no folders and no sub-namespaces: eight files do not need seven directories.
 
 ## Build, Run, Test
 
@@ -30,11 +38,15 @@ The app manifest requests `requireAdministrator`, so launching `Adrenalize.exe` 
 dotnet bin/Debug/net10.0-windows/win-x64/Adrenalize.dll --selftest
 ```
 
-`--selftest` runs `GameScanner.SelfTest()`, `UserSettings.SelfTest()`, `Logger.SelfTest()`, and `Program.SelfTestNativeInterop()`, prints `SelfTest OK`, and exits with code 0. It throws on failure. These are plain assertion methods, not a test framework — there is no test project and none is wanted. If you change name normalization, executable scoring, or the settings parser, extend the matching `SelfTest` method in that same file.
+`--selftest` runs `GameScanner.SelfTest()`, `UserSettings.SelfTest()`, `Logger.SelfTest()`, and `Program.SelfTestNativeInterop()`, prints `SelfTest OK`, and exits with code 0. It throws on failure. These are plain assertion methods, not a test framework, there is no test project and none is wanted. If you change name normalization, executable scoring, or the settings parser, extend the matching `SelfTest` method in that same file.
 
 `SelfTestNativeInterop` exists because `EnumWindows` takes a managed callback marshalled as a function pointer, and broken callback marshalling fails silently rather than at compile time. It enumerates top-level windows and asserts the callback fired at least once. It needs an interactive window station, so it will report zero over a session that has none.
 
+Anything past parsing, scoring, and settings needs a real machine with AMD hardware and installed games. State plainly what was verified and what was not.
+
 ## Shipping A Single Executable
+
+Release builds are named `Adrenalize_v<version>.exe`, matching `<Version>` in the `.csproj`. The version is always major and minor with a single digit after the dot: `1.7`, never `1.7.0`. Bump the minor for every shipped change, rename the published exe to match, and do not leave an unversioned `Adrenalize.exe` behind.
 
 One command. No packaging step, no installer, no extra tooling:
 
@@ -48,7 +60,7 @@ The result is one file:
 bin\Release\net10.0-windows\win-x64\publish\Adrenalize.exe
 ```
 
-Roughly 50 MB, and that is the whole application. Copy it anywhere and run it — no .NET runtime on the target machine, no DLLs beside it, no install. Double-clicking it raises a UAC prompt, which is the manifest doing its job.
+Roughly 50 MB, and that is the whole application. Copy it anywhere and run it, no .NET runtime on the target machine, no DLLs beside it, no install. Double-clicking it raises a UAC prompt, which is the manifest doing its job.
 
 A `Adrenalize.pdb` lands next to the exe. That is the debug symbol file, used only to get line numbers in stack traces. The exe does not need it. Ship the exe alone.
 
@@ -61,7 +73,7 @@ Four `.csproj` properties produce this, and all four are required:
 | `PublishSingleFile` | Publish folder fills with loose runtime DLLs instead of one file |
 | `EnableCompressionInSingleFile` | Exe roughly doubles in size |
 
-The size is the price of self-containment: the .NET runtime plus the WinForms stack are inside the exe. Compression is already on. Do not reach for trimming (`PublishTrimmed`) or Native AOT to shrink it — WinForms is not trim-safe and is unsupported under AOT, so both will either fail the build or produce an exe that crashes at runtime when the tray icon is created.
+The size is the price of self-containment: the .NET runtime plus the WinForms stack are inside the exe. Compression is already on. Do not reach for trimming (`PublishTrimmed`) or Native AOT to shrink it, WinForms is not trim-safe and is unsupported under AOT, so both will either fail the build or produce an exe that crashes at runtime when the tray icon is created.
 
 To publish for a different architecture, override the runtime identifier rather than editing the file:
 
@@ -73,18 +85,16 @@ dotnet publish -c Release -r win-arm64
 
 Run this after every change, before reporting the work as done. It is not optional and it is not covered by `dotnet build`.
 
-**CSharpier** formats all C#. It is installed as a global tool and invoked as `csharpier`, not `dotnet csharpier`:
+CSharpier formats all C#. It is installed as a global tool and invoked as `csharpier`, not `dotnet csharpier`:
 
 ```
 csharpier format .
 csharpier check .
 ```
 
-`format` rewrites files in place, `check` reports without writing and exits 1 on a difference. Default width is 100 columns, which is what the existing layout matches. CSharpier leaves raw string literal contents alone, so the ASCII banner in `PrintConsoleHeader` is safe — but its closing `"""` sets the indent that gets stripped from every line, so do not re-indent that block by hand.
+`format` rewrites files in place, `check` reports without writing and exits 1 on a difference. Default width is 100 columns, which is what the existing layout matches. CSharpier leaves raw string literal contents alone, so the ASCII banner in `PrintConsoleHeader` is safe, but its closing quotes set the indent that gets stripped from every line, so do not re-indent that block by hand.
 
-`.editorconfig` carries analyzer preferences only — naming rules, `var` usage, expression-bodied members. Every layout key it once held was removed because CSharpier owns layout and a second opinion on the same thing can only disagree. Do not add `csharp_space_*`, `csharp_new_line_*`, or `csharp_indent_*` keys back.
-
-A `RazorStyle.ps1` script used to live at the repository root and check the razor conventions below. It was deleted: 366 lines checking zero files in a WinForms console app. The conventions survive as prose in Code Style, which is where they get read.
+`.editorconfig` carries the three naming rules, the file-scoped namespace rule, and `var` preferences. Nothing else. Every layout key was removed because CSharpier owns layout, and roughly ninety lines of suggestion-level and silent-level entries were removed because they only restated Roslyn defaults. Do not add `csharp_space_*`, `csharp_new_line_*`, or `csharp_indent_*` keys back, and do not re-add preference keys that change no diagnostic.
 
 ## Architecture
 
@@ -93,74 +103,82 @@ Flow, start to finish:
 1. `Program.Main` claims a global mutex. A second instance signals the first through a named `EventWaitHandle` and exits, so double-clicking the exe again just un-hides the existing window.
 2. Settings load from `%AppData%\Adrenalize\settings.ini`, then startup registration is applied to match.
 3. A WinForms message pump starts on a background thread purely to host the tray icon.
-4. `GameScanner.ScanInstalledGameProcessNames()` walks the disk and returns a `Dictionary<processName, displayName>`. It runs at startup and again on the tray's Rescan Games item.
-5. Console input echo is switched off, then the monitoring loop polls `Process.GetProcesses()` every 2 seconds and diffs against the previous snapshot. A process name that appears and is in the game map triggers a reset.
-6. `AmdReset.ExecuteReset()` stops AMD services, kills AMD processes, restarts the services, relaunches Adrenalin, and hides every window Adrenalin opens so nothing appears on screen.
+4. `GameScanner.ScanInstalledGameProcessNames()` walks the disk and returns a map of process name to display name. It runs at startup and again on the tray's Rescan Games item.
+5. Console input echo is switched off, then a WMI event watcher subscribes to process creation. A started process whose normalized name is in the game map triggers a reset 30 seconds later.
+6. `AmdReset.ExecuteReset()` stops AMD services, kills AMD processes, restarts the services, relaunches Adrenalin as the signed-in user, hides it through `cncmd.exe hide`, then verifies the result and returns whether the reset actually completed.
 
 ### Files
 
 | File | Responsibility |
 | --- | --- |
-| `Program.cs` | Entry point, console output, settings mutation, monitoring loop, console window state |
-| `Amd/AmdReset.cs` | The whole reset sequence: services, processes, Adrenalin launch and close |
-| `Game/GameScanner.cs` | Disk and registry scanning per launcher, executable picking, name normalization |
-| `Configuration/UserSettings.cs` | INI load, parse, save |
-| `Tray/TrayManager.cs` | Tray icon and context menu, calls straight into `Program` |
-| `Startup/StartupManager.cs` | Task Scheduler registration and removal |
-| `Native/NativeMethods.cs` | P/Invoke declarations and Win32 constants |
-| `Utilities/Logger.cs` | Timestamped colored console output, mirrored to the log file |
+| `Program.cs` | Entry point, console output, settings table, monitoring loop, console window state |
+| `AmdReset.cs` | The whole reset sequence: services, processes, Adrenalin launch and hide |
+| `GameScanner.cs` | Disk and registry scanning per launcher, executable picking, name normalization |
+| `UserSettings.cs` | INI load, parse, save |
+| `TrayManager.cs` | Tray icon and context menu, calls straight into `Program` |
+| `StartupManager.cs` | Task Scheduler registration and removal |
+| `NativeMethods.cs` | P/Invoke declarations and Win32 constants |
+| `Logger.cs` | Timestamped colored console output, mirrored to the log file |
 
 ## Design Decisions
 
 These are the non-obvious calls. Do not undo them without a reason.
 
-**Services are discovered and controlled through WMI, but waited on through `ServiceController`.** `System.Management` is a dependency because discovery needs `Win32_Service` — the filter has to match on `DisplayName` as well as `Name`, which `ServiceController` cannot do in one pass. `InvokeOnServices` enumerates and calls `InvokeMethod("StopService")` on the same objects, so no process is spawned. The previous version shelled out to `sc.exe` for every stop, start, and state poll — roughly 60 process launches per reset — and scraped the text output for `RUNNING` and `STOPPED`. Do not go back to that.
+**A reset reports whether it worked.** `ExecuteReset` returns a bool. `VerifyReset` checks that every service it stopped is Running again and that an Adrenalin process exists, logging each failure in red. Before this the app printed Reset Done unconditionally, including the weeks where the reset stopped everything and Adrenalin never came back.
 
-Waiting for the target state is `ServiceController.WaitForStatus`, which replaced about fifty lines that re-queried every service on the machine every 250 ms. `WaitForServiceStates` keeps one shared deadline across the whole list rather than giving each service its own timeout, or three services would turn a 15-second cap into 45. `WaitForStatus` throws on timeout and on a service that no longer exists; both are swallowed, because the old polling loop treated a vanished service as "reached" and the reset must continue either way.
+**No window is a success, not a failure.** Adrenalin relaunched by its own stack usually comes up in the background with no window at all, which is exactly what this app wants. `HideAdrenalin` waits up to 20 seconds for a window, runs `cncmd.exe hide` if one appears, and otherwise logs Adrenalin Running In The Background and returns. A version that demanded a window before calling the reset complete was wrong and reported Reset Incomplete on perfectly good runs.
+
+**The reset waits 30 seconds after a game starts.** The old delay was 2 seconds, which fired while the game was still loading and before its driver hooks existed. It is deliberately not configurable: one value that is long enough for every game beats a setting nobody knows how to tune. The game is re-checked after the wait, so a launch that was closed again in the meantime is skipped.
+
+**Extra games come from `games.txt`.** `%AppData%\Adrenalize\games.txt` holds one process name per line and is merged into the scan result. The file is created with two comment lines on first run so it can be discovered without reading this document. It exists because the scanner covers Steam, Epic, Riot, Roblox, Rockstar and three common folders, and anything outside those was previously unreachable without a code change.
+
+**Only the two services Adrenalin needs are touched.** `s_requiredServiceNames` names them outright: AMD External Events Utility and AMD Crash Defender Service. The previous version matched any service whose name or display name contained AMD or Radeon, which also restarted `AmdPpkgSvc`, a driver-install provisioning service Adrenalin does not use and the slowest thing in the reset at roughly 12 seconds. Naming the services also means a reset never touches something unrelated on a machine with other AMD software. Log lines use the WMI `DisplayName`, not the service key.
+
+**Services are discovered and controlled through WMI, but waited on through `ServiceController`.** `System.Management` is a dependency because discovery needs `Win32_Service`, which carries `DisplayName` and `State` in the same query. `ControlServices` takes the filter, the method name, the target state and the timeout, so stopping and starting are one method rather than two near-identical ones. It enumerates and calls `InvokeMethod` on the same objects, so no process is spawned, and it logs any non-zero return code instead of discarding it, which is how a silently failing stop or start used to go unnoticed. The previous version shelled out to `sc.exe` for every stop, start, and state poll, roughly 60 process launches per reset, and scraped the text output for RUNNING and STOPPED. Do not go back to that.
+
+Waiting for the target state is `ServiceController.WaitForStatus`, which replaced about fifty lines that re-queried every service on the machine every 250 ms. `WaitForServiceStates` keeps one shared deadline across the whole list rather than giving each service its own timeout, or three services would turn a 15-second cap into 45. `WaitForStatus` throws on timeout and on a service that no longer exists; both are swallowed, because the old polling loop treated a vanished service as reached and the reset must continue either way. The start wait is 25 seconds rather than 10 because `AmdPpkgSvc` takes about 12 seconds to reach Running, while the two services Adrenalin actually needs are up instantly. A shorter cap made the verification step report a false failure every run. The reset continues either way, so the deadline is a cap, not a requirement.
+
+**Adrenalin is launched through a throwaway scheduled task, not `Process.Start`.** Adrenalin 26.10 quits during its own startup when it inherits elevation, the process appears, shows its splash, and exits after roughly eight seconds without ever creating a window. The app is manifest-elevated, so a plain `Process.Start` hands Adrenalin a high-integrity token and it dies every time, leaving no window and no tray icon. Measured on 26.10.41.01: launched as the signed-in user the window appears and stays, launched from an elevated process it never appears. `StartAsSignedInUser` registers a task named `AdrenalizeLaunch` with `TaskRunLevel.LUA` and an interactive logon type, runs it, and deletes it once the process is up. A task-launched process keeps running after its task is deleted, which is why the cleanup is immediate rather than deferred. The `TaskScheduler` package is already a dependency for startup registration, so this costs nothing new. Do not switch this back to `Process.Start`, and do not reach for `explorer.exe` as the de-elevation trick, from an elevated process it launches a second elevated Explorer that starts the target elevated anyway, which was tried and fails the same way.
+
+**Adrenalin is hidden with `cncmd.exe hide`, AMD's own command.** Adrenalin shows its window on startup whatever it is told, usually maximized, and it appears several seconds after the process does. `HideAdrenalin` waits for a visible window owned by a `RadeonSoftware` process, found by walking every top-level window with `EnumWindows` because `MainWindowHandle` returns the first window of the main thread, which for Adrenalin is often an invisible helper. Once a window exists it runs `cncmd.exe hide` through the same de-elevated task path as the launch and confirms the window is gone, capped at 20 seconds. The previous version posted `ShowWindow(SW_HIDE)` plus `WM_CLOSE` at the window itself and guessed that Adrenalin reads that as go to tray; `hide` is what AMD's own shortcut path uses, so it survives driver updates. `cncmd.exe` also understands `show`, `restart` and `restartandshow` if any of those are ever needed.
 
 **Startup uses Task Scheduler, not the `Run` registry key.** The app requires administrator rights. A `Run` key entry for an admin-manifested app produces a UAC prompt at every logon. A scheduled task with `RunLevel.Highest` does not. `StartupManager.Disable()` and `Enable()` both clear the old `Run` key entry, so upgrades from the registry-based versions clean themselves up.
 
-**Elevation is enforced by the manifest, not by code.** There is no `IsAdministrator()` check and no self-relaunch path. Windows refuses to start the apphost unelevated, so such a check could never fail. This is why `--selftest` has to go through `dotnet <dll>`.
+**Elevation is enforced by the manifest, not by code.** There is no `IsAdministrator()` check and no self-relaunch path. Windows refuses to start the apphost unelevated, so such a check could never fail. This is why `--selftest` has to go through `dotnet` on the DLL.
 
-**Adrenalin is hidden by sweeping every top-level window it owns, not by `MainWindowHandle`.** Adrenalin ignores the hidden start style in `ProcessStartInfo` and shows itself anyway, usually maximized. The previous version posted one `WM_CLOSE` to `Process.MainWindowHandle` and gave up — `MainWindowHandle` returns the first top-level window of the main thread, which for Adrenalin is often an invisible helper, so the real window stayed on screen. `HideAdrenalinWindows` instead collects the PIDs of every `RadeonSoftware` and `RadeonSettings` process, walks all top-level windows with `EnumWindows`, and for each visible window owned by one of them calls `ShowWindow(SW_HIDE)` followed by `PostMessage(WM_CLOSE)`. Hiding kills the on-screen flash; `WM_CLOSE` is what Adrenalin interprets as "go to tray", so its internal state stays consistent. The sweep repeats every 200 ms until five consecutive passes find nothing, capped at 20 seconds, because the window appears late and can reappear once.
+**One table drives every setting.** `Program.SettingToggles` holds a label, a reader, and a writer per setting. The tray builds its checkable menu items by looping it, `RefreshToggleStates` re-reads it when the menu opens, and `PrintSettingsStatus` prints it. Before, the same four settings were listed once as tray toggles, once as four near-identical setter methods, and once as a local array in the status printer. Adding a setting now costs one row plus two lines in `UserSettings`.
 
-**The console accepts no input.** `DisableConsoleInput` clears `ENABLE_ECHO_INPUT` and `ENABLE_LINE_INPUT` on the standard input handle, so keystrokes neither echo nor form lines. There is no command parser — every action is a tray menu item. Do not add console commands back; that split meant the same three settings were written in two places. `GetConsoleMode` fails when standard input is redirected, which is why the call is guarded rather than asserted. `--selftest` deliberately does not call `DisableConsoleInput` — the mode change is not restored on exit, so a self-check run from an interactive terminal would leave that terminal with echo off.
+**The console accepts no input.** `DisableConsoleInput` clears `ENABLE_ECHO_INPUT` and `ENABLE_LINE_INPUT` on the standard input handle, so keystrokes neither echo nor form lines. There is no command parser, every action is a tray menu item. Do not add console commands back, that split meant the same settings were written in two places. `GetConsoleMode` fails when standard input is redirected, which is why the call is guarded rather than asserted. `--selftest` deliberately does not call `DisableConsoleInput`, the mode change is not restored on exit, so a self-check run from an interactive terminal would leave that terminal with echo off.
 
-**AMD processes are matched by name or by install path.** Some AMD binaries are not named `AMD` or `Radeon`, so `IsAmdProcess` falls back to checking the executable path against `s_amdExecutablePathMarkers`. `MainModule` throws for protected and already-exited processes, hence the swallowed exception. `IsAmdProcess` also refuses to match the current process — if the exe ever lives under an AMD path, the app would otherwise kill itself.
+**AMD processes are matched by name or by install path.** Some AMD binaries are not named AMD or Radeon, so `IsAmdProcess` falls back to checking the executable path against `s_amdExecutablePathMarkers`. `MainModule` throws for protected and already-exited processes, hence the swallowed exception. `IsAmdProcess` also refuses to match the current process, if the exe ever lives under an AMD path the app would otherwise kill itself. `ContainsAmdKeyword` rejects anything containing AMD64 first, because that is an architecture suffix: without it, Logitech's `logi_lamparray_service.AMD64` matched the AMD keyword and was killed on every reset.
 
 **The process kill is one sweep loop, not a pass plus a wait.** AMD services restart their helper processes, so a single kill pass is not enough. The loop kills, sleeps 200 ms, and repeats until a full pass finds nothing, capped at 10 seconds. Each PID is logged once.
 
-**Executable picking rejects first, then scores.** A game folder usually holds several `.exe` files. `IsRejectedExecutable` drops every candidate whose name contains a token in `s_executableRejectTokens` — `helper`, `service`, `crash`, `report`, `uninstall`, `setup` — before any of them is scored. `ScoreExecutable` then rewards names containing `win64` or `shipping` and names matching the folder, and penalizes `launcher`. Highest score wins.
+**Executable picking rejects first, then scores.** A game folder usually holds several `.exe` files. `IsRejectedExecutable` drops every candidate whose name contains a token in `s_executableRejectTokens`, which is helper, service, crash, report, uninstall, and setup, before any of them is scored. `ScoreExecutable` then rewards names containing win64 or shipping and names matching the folder, and subtracts five for launcher. Highest score wins. Both take the bare file name, computed once per candidate by the caller.
 
-The order matters and used to be the other way round. The veto ran in `TryAddGame` on the already-chosen winner, so a folder whose best-scoring exe happened to be a crash handler lost the whole game instead of falling through to the runner-up. Rejecting during enumeration also collapses the two token lists into one job each: reject means never a game, penalty means probably not the best exe here. `launcher` is the only penalty token left, because a game that ships nothing but a launcher-named exe still needs to be watched.
+The order matters and used to be the other way round. The veto ran in `TryAddGame` on the already-chosen winner, so a folder whose best-scoring exe happened to be a crash handler lost the whole game instead of falling through to the runner-up. Rejecting during enumeration also splits the job cleanly: reject means never a game, penalty means probably not the best exe here. Launcher is the only penalty, and it is an inline check rather than a token list, because a game that ships nothing but a launcher-named exe still needs to be watched.
 
-These weights are tuning against real installs, not a general algorithm — adjust them when a game is detected wrongly, and add a case to the self-check.
+These weights are tuning against real installs, not a general algorithm, adjust them when a game is detected wrongly, and add a case to the self-check.
 
 **`NormalizeProcessKey` has hardcoded special cases.** Assetto Corsa and VALORANT ship under several executable names that must collapse to one key. This is calibration, not cruft. Add cases here when a game is missed for the same reason.
 
-**Directory enumeration goes through `EnumerateSafely`.** `Directory.EnumerateFiles` is lazy, so a missing or locked directory throws on the first `MoveNext`, not at the call site. A `try` wrapped around the call would catch nothing. `EnumerateSafely` drives the enumerator manually and stops on any throw. `EnumerationOptions` also sets `IgnoreInaccessible` to `true`, which the `SearchOption` overloads do not.
+**Directory enumeration materialises inside the `try`.** `Directory.EnumerateFiles` is lazy, so a missing or locked directory throws on the first `MoveNext`, not at the call site, and a `try` around a returned iterator catches nothing. Building the list inside the `try` moves every throw back where it can be caught, which replaced a 25-line hand-rolled safe enumerator with two four-line methods. `EnumerationOptions` also sets `IgnoreInaccessible` to true, which the `SearchOption` overloads do not.
 
 **`TrayManager` calls `Program` static methods directly.** It used to take ten callback delegates in its constructor. There is one instance, created from one place, in the same assembly. Direct calls are shorter and easier to follow.
 
-**Two poll loops with different intervals.** The game scan runs every 2 seconds because `Process.GetProcesses()` opens a handle per process and is not cheap. The minimize-to-tray watcher runs every 150 ms because a slower interval leaves the window visible for a noticeable beat after the user minimizes it. They are not merged on purpose.
+**Nothing polls.** Game detection is a WMI `__InstanceCreationEvent` subscription on `Win32_Process`, which needs elevation the app already has and costs nothing while idle. The previous version called `Process.GetProcesses()` every 2 seconds forever, opening a handle per process each time, and detected a launch up to 2 seconds late. Minimize-to-tray is a `SetWinEventHook` on `EVENT_SYSTEM_MINIMIZESTART` installed on the WinForms pump thread, replacing a 150 ms poll of `IsIconic`. The hook callback delegate is held in a static field because the runtime would otherwise collect it while Windows still holds the pointer. Both watchers need the pump or the event thread to stay alive, so `Main` ends on `Task.Delay(Timeout.Infinite)` rather than a loop.
 
-**Settings stay in an INI file, not JSON.** `UserSettings.Parse` is about thirty hand-written lines that `JsonSerializer` would do in four, and swapping was considered. It was rejected: the win only materialises if the INI parser is deleted, and deleting it silently resets every existing user's settings on upgrade — including turning autostart off while leaving the scheduled task registered until the next launch removes it. Four stable booleans do not justify that. Adding a setting costs two lines in `Parse` and one in `Save`.
+**Incoming process names are normalized before lookup.** `GameScanner.NormalizeProcessKey` builds the map keys, so the watcher runs the same function over the started process name. The old poll compared the raw name against normalized keys, which silently missed exactly the games the special cases exist for: `VALORANT-Win64-Shipping` never matched the key `valorant`.
 
-**The log file is a tee on `Console.Out`, not a logging path.** `Logger.StartLogFile` wraps the existing `Console.Out` in a `TeeWriter` and hands it to `Console.SetOut`, so everything printed — banner, version, status block, every `Log` line — lands in `%AppData%\Adrenalize\log.txt` without a single call site changing. Colors are set through `Console.ForegroundColor`, which does not pass through the writer, so the file stays plain text. `TextWriter.Synchronized` covers the poll loop and the tray thread writing at once, so there is no lock here. `TeeWriter` overrides only `Write(char)`; the base class routes every other overload through it, which is char-by-char but irrelevant at a few hundred lines per run. The file is truncated at startup rather than rotated, and `StartLogFile` is called after the single-instance check so a second launch cannot wipe the running instance's log.
+**Settings stay in an INI file, not JSON.** `UserSettings.Parse` is about thirty hand-written lines that `JsonSerializer` would do in four, and swapping was considered. It was rejected: the win only materialises if the INI parser is deleted, and deleting it silently resets every existing user's settings on upgrade, including turning autostart off while leaving the scheduled task registered until the next launch removes it. Four stable booleans do not justify that.
 
-**There is no cancellation plumbing.** The app exits through `Environment.Exit(0)`. Background loops are `while (true)` and die with the process. A previous "Restart Monitoring" feature existed, cancelled and respawned the loops, did not re-scan games, and re-fired a reset for whatever was already running. It was removed.
+**The log file is a tee on `Console.Out`, not a logging path.** `Logger.StartLogFile` wraps the existing `Console.Out` in a `TeeWriter` and hands it to `Console.SetOut`, so everything printed lands in `%AppData%\Adrenalize\log.txt` without a single call site changing. Colors are set through `Console.ForegroundColor`, which does not pass through the writer, so the file stays plain text. `TextWriter.Synchronized` covers the poll loop and the tray thread writing at once, so there is no lock here. `TeeWriter` overrides only `Write(char)`, the base class routes every other overload through it, which is char-by-char but irrelevant at a few hundred lines per run. The file is truncated at startup rather than rotated, and `StartLogFile` is called after the single-instance check so a second launch cannot wipe the running instance's log.
 
-## Code Style
+**There is no cancellation plumbing.** The app exits through `Environment.Exit(0)`. Background loops are `while (true)` and die with the process. A previous Restart Monitoring feature existed, cancelled and respawned the loops, did not re-scan games, and re-fired a reset for whatever was already running. It was removed.
 
-Follow the existing style exactly. It is enforced by hand, not by a formatter config in the repo, but the layout matches CSharpier defaults at 100 columns.
+## Comment Style
 
-**Razor.** No `.razor` files exist yet. These apply if any are added. Prefer MudBlazor components; fall back to Bootstrap classes, then a MudBlazor `Style` property, then custom CSS, in that order. Prefer `MudElement` over plain HTML, and plain HTML only as a last resort — a raw `<div>` is a violation. Comments use `@* *@`, sit above a group of components, and contain only the main component name of that group. No comments above text, parameters, bindings, individual attributes, or small fragments. When a component has two or more attributes, each one after the first goes on its own line, aligned to the first. A component whose opening tag spans lines starts its content on the next line. Large containers such as `MudTable`, `MudGrid`, `MudDialog`, and `EditForm` get one blank line inside each end. Where a `.razor.cs` code-behind exists, all logic lives there and the `.razor` file gets no `@code` block.
-
-**Naming.** Full descriptive names everywhere — variables, fields, properties, methods. No abbreviations, no single letters. `settings`, not `s`. `configuration`, not `cfg`. `executablePath`, not `exePath`. Static fields use the `s_` prefix, instance fields use `_`.
-
-**Comments.** Very short and clear, a couple of words, up to about ten words when genuinely needed. Every word starts with a capital letter. No trailing punctuation. Always on their own line above the code they describe. Never multi-line.
-
-Comments are allowed only inside method bodies, or above a group of related fields or properties. Do not comment classes, interfaces, models, or services. No XML documentation comments. Do not comment obvious code. Do not add comments to the `.csproj`.
+Comments are very short and clear, a couple of words. Up to eight or ten words when genuinely needed, never more. Never write a long or multi-line comment. Every word starts with a capital letter. Comments do not end with punctuation. A comment always sits on its own line above the code it describes.
 
 ```csharp
 // Never Kill Ourselves
@@ -168,7 +186,31 @@ if (processInstance.Id == Environment.ProcessId)
     return false;
 ```
 
-**Regions.** Only around methods, never around fields or properties. Only when there are two or more of them — never a single region on its own. No blank line directly after `#region` or directly before `#endregion`. One blank line before `#region` and one after `#endregion`.
+In C#, comments are allowed only inside method bodies, or above a group of related fields or properties. Do not comment obvious code. Do not comment classes, interfaces, models, view models, or services. No XML documentation comments. Do not add comments to `.csproj` files. Do not write a comment that explains something to the reader of the conversation, that is not what comments are for.
+
+In Razor markup, only comment above a group or chunk of components or elements, and the comment contains only the main component or element name of that group. Use the Razor comment syntax.
+
+```razor
+@* Records Table *@
+<MudTable>
+...
+</MudTable>
+
+@* Save Button *@
+<MudButton>
+...
+</MudButton>
+```
+
+Do not write descriptive Razor comments. Do not put a Razor comment above text, parameters, bindings, individual attributes, or small markup fragments.
+
+The same rule covers user-facing text: console output, tray labels, balloon tips, localization strings, helper text, titles, labels, and validation messages. Keep it short and clear, start each word with a capital letter, and do not end it with punctuation.
+
+## Code Style
+
+**Naming.** Every variable, field, property, and method uses a full descriptive name. No abbreviations, no single letters. Use `settings`, not `s`. Use `configuration`, not `cfg`. Use `executablePath`, not `exePath`. Names say what the thing is for. Static fields use the `s_` prefix, instance fields use the underscore prefix, constants are PascalCase.
+
+**Regions.** Only around methods, never around fields or properties. Only when there is a reason for two or more, never a single region on its own. No blank line directly after a region opener or directly before its closer. One blank line before the opener and one after the closer.
 
 ```csharp
     #region Services
@@ -178,14 +220,16 @@ if (processInstance.Id == Environment.ProcessId)
     #endregion
 ```
 
-**User-facing text.** Console output, command names, tray labels, and balloon tips follow the same rule as comments: short, clear, each word capitalized, no trailing punctuation.
+**Razor and UI.** No Razor files exist here yet, these apply if any are added. Use MudBlazor components wherever possible. When MudBlazor has no suitable component, use Bootstrap classes. When Bootstrap is also insufficient, use the `Style` property of a MudBlazor component. Custom CSS is the last option. Prefer `MudElement` over plain HTML elements when no MudBlazor component fits, and treat a plain HTML element as the last option too.
+
+**Code-behind.** A Razor component uses its code-behind file when one exists. Never add a code block to a Razor file that has a matching `.razor.cs`. All component logic lives in the code-behind.
 
 ## Working Here
 
-Before changing anything, read the file you are touching and every caller of the method you are about to edit. The codebase is small enough to hold in your head — do that instead of guessing.
+Before changing anything, inspect every related file: the file you are touching, its callers, code-behind files, services, models, interfaces, registrations, and the project file. Do not assume the architecture. This codebase is small enough to hold in your head, so read it instead of guessing.
 
-Prefer deleting to adding. This repository was audited for over-engineering and lost roughly a third of its lines: dead configuration arrays, unused P/Invoke declarations, wrapper classes that only delegated, an unreachable elevation path, and four utility files that each existed for one caller. Do not reintroduce that shape. No interface with one implementation, no factory for one product, no configuration value nobody sets.
+Prefer deleting to adding. This repository has been audited for over-engineering three times and lost roughly a third of its lines: dead configuration arrays, unused P/Invoke declarations, wrapper classes that only delegated, an unreachable elevation path, four utility files that each existed for one caller, seven single-file folders, and ninety lines of `.editorconfig` that changed no diagnostic. Do not reintroduce that shape. No interface with one implementation, no factory for one product, no configuration value nobody sets, no single-element array where a direct check reads better.
 
-Reach for the standard library and the platform before writing code, and before adding a package. The three existing dependencies all earn their place: `System.Management` for WMI service discovery and control, `System.ServiceProcess.ServiceController` for waiting on service state, `TaskScheduler` because the logon-without-UAC requirement cannot be met any other way.
+Reach for the standard library and the platform before writing code, and before adding a package. The three dependencies all earn their place: `System.Management` for WMI service discovery and control, `System.ServiceProcess.ServiceController` for waiting on service state, and `TaskScheduler` for both the logon-without-UAC requirement and the de-elevated Adrenalin launch.
 
-Verify with `dotnet build`, the `--selftest` run, and `csharpier format .`. All three, every time. Anything beyond parsing and scoring needs a real machine with AMD hardware and installed games, so state plainly what you did and did not verify.
+Verify with `dotnet build`, the `--selftest` run, and `csharpier format .`. All three, every time.

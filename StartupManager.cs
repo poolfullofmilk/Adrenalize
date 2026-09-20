@@ -2,7 +2,7 @@ using System.Runtime.Versioning;
 using Microsoft.Win32;
 using Microsoft.Win32.TaskScheduler;
 
-namespace Adrenalize.Startup;
+namespace Adrenalize;
 
 [SupportedOSPlatform("windows")]
 internal static class StartupManager

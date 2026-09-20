@@ -1,15 +1,18 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
-namespace Adrenalize.Native;
+namespace Adrenalize;
 
 [SupportedOSPlatform("windows")]
 internal static partial class NativeMethods
 {
-    // Window Message And Show State Codes
-    internal const uint WindowMessageClose = 0x0010;
+    // Window Show State Codes
     internal const int ShowWindowHide = 0;
     internal const int ShowWindowRestore = 9;
+
+    // Window Event Hook Codes
+    internal const uint EventSystemMinimizeStart = 0x0016;
+    internal const uint WinEventOutOfContext = 0x0000;
 
     // System Menu Item And Flag Codes
     internal const uint SystemCommandClose = 0xF060;
@@ -24,13 +27,26 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal delegate bool EnumWindowsCallback(IntPtr windowHandle, IntPtr parameter);
 
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool PostMessage(
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    internal delegate void WinEventCallback(
+        IntPtr hookHandle,
+        uint eventType,
         IntPtr windowHandle,
-        uint message,
-        IntPtr wordParameter,
-        IntPtr longParameter
+        int objectIdentifier,
+        int childIdentifier,
+        uint threadIdentifier,
+        uint timestamp
+    );
+
+    [LibraryImport("user32.dll")]
+    internal static partial IntPtr SetWinEventHook(
+        uint eventMinimum,
+        uint eventMaximum,
+        IntPtr moduleHandle,
+        [MarshalAs(UnmanagedType.FunctionPtr)] WinEventCallback callback,
+        uint processIdentifier,
+        uint threadIdentifier,
+        uint flags
     );
 
     [LibraryImport("user32.dll", SetLastError = true)]
@@ -77,8 +93,4 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool DeleteMenu(IntPtr menuHandle, uint itemIdentifier, uint flags);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool IsIconic(IntPtr windowHandle);
 }

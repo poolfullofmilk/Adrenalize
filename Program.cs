@@ -1,14 +1,8 @@
 using System.Diagnostics;
+using System.Management;
 using System.Reflection;
 using System.Runtime.Versioning;
-using Adrenalize.Amd;
-using Adrenalize.Configuration;
-using Adrenalize.Game;
-using Adrenalize.Native;
-using Adrenalize.Startup;
-using Adrenalize.Tray;
-using Adrenalize.Utilities;
-using static Adrenalize.Utilities.Logger;
+using static Adrenalize.Logger;
 
 namespace Adrenalize;
 
@@ -19,18 +13,49 @@ internal static class Program
     private static int s_pendingResetFlag;
     private static TrayManager? s_trayManager;
 
-    // Process Name To Display Name, Also The Running Game Lookup
+    // Process Name To Display Name
     private static Dictionary<string, string> s_games = [];
-    private static HashSet<string> s_previouslyRunning = new(StringComparer.OrdinalIgnoreCase);
+
+    // Kept Alive For The Lifetime Of The Process
+    private static ManagementEventWatcher? s_processWatcher;
+    private static NativeMethods.WinEventCallback? s_minimizeCallback;
 
     private const string SingleInstanceMutexName = "Global\\Adrenalize_SingleInstance";
     private const string ShowConsoleEventName = "Global\\Adrenalize_ShowConsole";
 
-    // Process Scan Frequency And Delay Before Reset After Game Start
-    private static readonly TimeSpan s_pollInterval = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan s_gameStartDelay = TimeSpan.FromSeconds(2);
+    // Long Enough For Any Game To Finish Loading
+    private static readonly TimeSpan s_gameStartDelay = TimeSpan.FromSeconds(30);
 
     internal static UserSettings Settings { get; private set; } = new();
+
+    // Drives Both The Tray Toggles And The Status Block
+    internal static (string Label, Func<bool> Read, Action<bool> Write)[] SettingToggles { get; } =
+        [
+            (
+                "Run On Startup",
+                () => Settings.StartupEnabled,
+                value =>
+                {
+                    Settings.StartupEnabled = value;
+                    ApplyStartupRegistration();
+                }
+            ),
+            (
+                "Minimize To Tray",
+                () => Settings.MinimizeToTray,
+                value => Settings.MinimizeToTray = value
+            ),
+            (
+                "Start Minimized",
+                () => Settings.StartMinimized,
+                value => Settings.StartMinimized = value
+            ),
+            (
+                "Notifications",
+                () => Settings.NotificationsEnabled,
+                value => Settings.NotificationsEnabled = value
+            ),
+        ];
 
     #region Entry Point
     private static async Task Main(string[] args)
@@ -119,9 +144,9 @@ internal static class Program
         Console.CancelKeyPress += (_, cancelEventArgs) => cancelEventArgs.Cancel = true;
 
         DisableConsoleInput();
-        _ = WatchForMinimizeAsync();
+        StartGameWatcher();
 
-        await RunMonitoringLoopAsync().ConfigureAwait(false);
+        await Task.Delay(Timeout.Infinite).ConfigureAwait(false);
     }
 
     private static void SelfTestNativeInterop()
@@ -157,9 +182,30 @@ internal static class Program
 
     private static void RunApplicationMessagePump()
     {
-        // The Tray Icon Must Live On The Pump Thread
+        // The Tray Icon And The Window Hook Need The Pump Thread
         s_trayManager = new TrayManager();
+        WatchForMinimize();
         Application.Run();
+    }
+
+    private static void WatchForMinimize()
+    {
+        // Redirect Minimize To The Tray
+        s_minimizeCallback = (_, _, windowHandle, _, _, _, _) =>
+        {
+            if (Settings.MinimizeToTray && windowHandle == NativeMethods.GetConsoleWindow())
+                NativeMethods.ShowWindow(windowHandle, NativeMethods.ShowWindowHide);
+        };
+
+        NativeMethods.SetWinEventHook(
+            NativeMethods.EventSystemMinimizeStart,
+            NativeMethods.EventSystemMinimizeStart,
+            IntPtr.Zero,
+            s_minimizeCallback,
+            processIdentifier: 0,
+            threadIdentifier: 0,
+            NativeMethods.WinEventOutOfContext
+        );
     }
 
     private static void DisableConsoleInput()
@@ -195,22 +241,6 @@ internal static class Program
         }
     }
 
-    private static async Task WatchForMinimizeAsync()
-    {
-        while (true)
-        {
-            await Task.Delay(150).ConfigureAwait(false);
-
-            if (!Settings.MinimizeToTray)
-                continue;
-
-            // Redirect Minimize To The Tray
-            var consoleWindowHandle = NativeMethods.GetConsoleWindow();
-            if (consoleWindowHandle != IntPtr.Zero && NativeMethods.IsIconic(consoleWindowHandle))
-                NativeMethods.ShowWindow(consoleWindowHandle, NativeMethods.ShowWindowHide);
-        }
-    }
-
     private static void SetConsoleWindowState(int showCommand)
     {
         var consoleWindowHandle = NativeMethods.GetConsoleWindow();
@@ -223,35 +253,12 @@ internal static class Program
     #endregion
 
     #region Settings
-    internal static void SetStartup(bool value)
+    internal static void ApplySettingToggle(int index, bool value)
     {
-        Settings.StartupEnabled = value;
-        ApplyStartupRegistration();
-        SaveAndLogFlag("Run On Startup", value);
-    }
-
-    internal static void SetTray(bool value)
-    {
-        Settings.MinimizeToTray = value;
-        SaveAndLogFlag("Minimize To Tray", value);
-    }
-
-    internal static void SetStartMinimized(bool value)
-    {
-        Settings.StartMinimized = value;
-        SaveAndLogFlag("Start Minimized", value);
-    }
-
-    internal static void SetNotifications(bool value)
-    {
-        Settings.NotificationsEnabled = value;
-        SaveAndLogFlag("Notifications", value);
-    }
-
-    private static void SaveAndLogFlag(string name, bool value)
-    {
+        var (label, _, write) = SettingToggles[index];
+        write(value);
         Settings.Save();
-        Log($"{name} Set To {(value ? "TRUE" : "FALSE")}", ConsoleColor.Cyan);
+        Log($"{label} Set To {(value ? "TRUE" : "FALSE")}", ConsoleColor.Cyan);
     }
 
     private static void ApplyStartupRegistration()
@@ -310,19 +317,11 @@ internal static class Program
 
     internal static void PrintSettingsStatus()
     {
-        (string Label, bool Value)[] flags =
-        [
-            ("Run On Startup", Settings.StartupEnabled),
-            ("Minimize To Tray", Settings.MinimizeToTray),
-            ("Start Minimized", Settings.StartMinimized),
-            ("Notifications", Settings.NotificationsEnabled),
-        ];
-
         Console.ForegroundColor = ConsoleColor.DarkGray;
         Console.WriteLine("Current Status");
 
-        foreach (var (label, value) in flags)
-            Console.WriteLine($"  {label + ":", -18}{(value ? "TRUE" : "FALSE")}");
+        foreach (var (label, read, _) in SettingToggles)
+            Console.WriteLine($"  {label + ":", -18}{(read() ? "TRUE" : "FALSE")}");
 
         Console.ResetColor();
     }
@@ -359,62 +358,55 @@ internal static class Program
     {
         ShowConsoleWindow();
         ScanGames();
-
-        // Newly Found Games Already Running Must Not Reset
-        s_previouslyRunning = GetRunningGameProcesses();
-
         Log("Watching For Games", ConsoleColor.Gray);
     }
 
-    private static async Task RunMonitoringLoopAsync()
+    private static void StartGameWatcher()
     {
         Log("Watching For Games", ConsoleColor.Gray);
-
-        while (true)
-        {
-            var currentlyRunning = GetRunningGameProcesses();
-            var startedProcessName = currentlyRunning.FirstOrDefault(name =>
-                !s_previouslyRunning.Contains(name)
-            );
-
-            if (startedProcessName is not null)
-            {
-                var displayName = s_games.TryGetValue(startedProcessName, out var niceName)
-                    ? niceName
-                    : startedProcessName;
-
-                _ = TryTriggerResetAsync(displayName, isManual: false);
-            }
-
-            s_previouslyRunning = currentlyRunning;
-            await Task.Delay(s_pollInterval).ConfigureAwait(false);
-        }
-    }
-
-    private static HashSet<string> GetRunningGameProcesses()
-    {
-        var running = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
-            foreach (var processInstance in Process.GetProcesses())
-            {
-                using (processInstance)
-                {
-                    if (s_games.ContainsKey(processInstance.ProcessName))
-                        running.Add(processInstance.ProcessName);
-                }
-            }
+            // WMI Reports Every Process Start, No Polling Needed
+            var startQuery = new WqlEventQuery(
+                "__InstanceCreationEvent",
+                TimeSpan.FromSeconds(1),
+                "TargetInstance isa 'Win32_Process'"
+            );
+
+            s_processWatcher = new ManagementEventWatcher(startQuery);
+            s_processWatcher.EventArrived += OnProcessStarted;
+            s_processWatcher.Start();
+        }
+        catch
+        {
+            Log("Process Watcher Failed To Start", ConsoleColor.Red);
+        }
+    }
+
+    private static void OnProcessStarted(object sender, EventArrivedEventArgs eventArguments)
+    {
+        try
+        {
+            var startedProcess = (ManagementBaseObject)eventArguments.NewEvent["TargetInstance"];
+            var processName = GameScanner.NormalizeProcessKey(
+                Path.GetFileNameWithoutExtension(startedProcess["Name"]?.ToString() ?? string.Empty)
+            );
+
+            if (s_games.TryGetValue(processName, out var displayName))
+                _ = TryTriggerResetAsync(displayName, processName, isManual: false);
         }
         catch { }
-
-        return running;
     }
 
     internal static void TriggerManualReset() =>
-        _ = TryTriggerResetAsync("Manual Reset", isManual: true);
+        _ = TryTriggerResetAsync("Manual Reset", processName: null, isManual: true);
 
-    private static async Task TryTriggerResetAsync(string startedDisplayName, bool isManual)
+    private static async Task TryTriggerResetAsync(
+        string startedDisplayName,
+        string? processName,
+        bool isManual
+    )
     {
         if (Interlocked.Exchange(ref s_pendingResetFlag, 1) == 1)
             return;
@@ -428,7 +420,7 @@ internal static class Program
                 await Task.Delay(s_gameStartDelay).ConfigureAwait(false);
 
                 // Abort If The Game Closed During The Delay
-                if (GetRunningGameProcesses().Count == 0)
+                if (!IsGameRunning(processName))
                 {
                     Log("Game Closed Before Reset", ConsoleColor.DarkYellow);
                     Log("Watching For Games", ConsoleColor.Gray);
@@ -436,16 +428,44 @@ internal static class Program
                 }
             }
 
-            AmdReset.ExecuteReset();
-            Log("Reset Done", ConsoleColor.Green);
-            Log("Watching For Games", ConsoleColor.Gray);
+            if (AmdReset.ExecuteReset())
+            {
+                Log("Reset Done", ConsoleColor.Green);
+                s_trayManager?.ShowBalloonTip("Adrenalize", $"Reset Done For {startedDisplayName}");
+            }
+            else
+            {
+                Log("Reset Incomplete", ConsoleColor.Red);
+                s_trayManager?.ShowBalloonTip("Adrenalize", "Reset Incomplete, Check The Console");
+            }
 
-            s_trayManager?.ShowBalloonTip("Adrenalize", $"Reset Done For {startedDisplayName}");
+            Log("Watching For Games", ConsoleColor.Gray);
         }
         finally
         {
             Interlocked.Exchange(ref s_pendingResetFlag, 0);
         }
+    }
+
+    private static bool IsGameRunning(string? processName)
+    {
+        if (processName is null)
+            return true;
+
+        try
+        {
+            foreach (var processInstance in Process.GetProcesses())
+            {
+                using (processInstance)
+                {
+                    if (GameScanner.NormalizeProcessKey(processInstance.ProcessName) == processName)
+                        return true;
+                }
+            }
+        }
+        catch { }
+
+        return false;
     }
     #endregion
 }

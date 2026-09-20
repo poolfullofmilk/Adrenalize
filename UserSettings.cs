@@ -1,4 +1,4 @@
-namespace Adrenalize.Configuration;
+namespace Adrenalize;
 
 internal sealed class UserSettings
 {

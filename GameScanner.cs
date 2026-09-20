@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
-namespace Adrenalize.Game;
+namespace Adrenalize;
 
 [SupportedOSPlatform("windows")]
 internal static partial class GameScanner
@@ -19,9 +19,6 @@ internal static partial class GameScanner
         "setup",
     ];
 
-    // Executable Name Tokens Costing Five Points Each
-    private static readonly string[] s_executablePenaltyTokens = ["launcher"];
-
     // Executable Name Tokens Earning Three Points Each
     private static readonly string[] s_executableBonusTokens = ["win64", "shipping"];
 
@@ -35,12 +32,14 @@ internal static partial class GameScanner
         @"game\bin\win64",
         @"live\ShooterGame\Binaries\Win64",
     ];
-    private static readonly string[] s_steamRoot =
-    [
-        @"C:\Program Files (x86)\Steam",
-        @"C:\Program Files\Steam",
-    ];
     private static readonly string[] s_commonGameRoots = [@"C:\Games", @"D:\Games", @"E:\Games"];
+
+    // Extra Process Names Added By Hand
+    private static readonly string s_manualGamesFilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "Adrenalize",
+        "games.txt"
+    );
 
     #region Scan
     internal static Dictionary<string, string> ScanInstalledGameProcessNames()
@@ -64,7 +63,39 @@ internal static partial class GameScanner
         foreach (var rootDirectory in unnamedGames)
             TryAddGame(processNameToDisplayName, rootDirectory, displayName: null);
 
+        AddManualGames(processNameToDisplayName);
         return processNameToDisplayName;
+    }
+
+    private static void AddManualGames(Dictionary<string, string> map)
+    {
+        try
+        {
+            if (!File.Exists(s_manualGamesFilePath))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(s_manualGamesFilePath)!);
+                File.WriteAllLines(
+                    s_manualGamesFilePath,
+                    ["# One Process Name Per Line", "# Example: Cyberpunk2077"]
+                );
+                return;
+            }
+
+            foreach (var line in File.ReadAllLines(s_manualGamesFilePath))
+            {
+                var entry = Path.GetFileNameWithoutExtension(line.Trim());
+                if (entry.Length == 0 || entry.StartsWith('#'))
+                    continue;
+
+                var processName = NormalizeProcessKey(entry);
+                if (processName.Length == 0)
+                    continue;
+
+                var displayName = NormalizeDisplayName(entry);
+                map[processName] = displayName.Length > 0 ? displayName : entry;
+            }
+        }
+        catch { }
     }
 
     private static void TryAddGame(
@@ -106,11 +137,13 @@ internal static partial class GameScanner
 
             foreach (var executablePath in EnumerateFilesSafely(probeDirectory, "*.exe"))
             {
+                var executableName = Path.GetFileNameWithoutExtension(executablePath);
+
                 // Vetoed Names Never Compete, So The Runner Up Survives
-                if (IsRejectedExecutable(executablePath))
+                if (IsRejectedExecutable(executableName))
                     continue;
 
-                var score = ScoreExecutable(executablePath, folderName);
+                var score = ScoreExecutable(executableName, folderName);
                 if (score > bestScore)
                 {
                     bestScore = score;
@@ -122,27 +155,22 @@ internal static partial class GameScanner
         return bestExecutablePath;
     }
 
-    private static bool IsRejectedExecutable(string executablePath)
-    {
-        var executableName = Path.GetFileNameWithoutExtension(executablePath);
-
-        return s_executableRejectTokens.Any(token =>
+    private static bool IsRejectedExecutable(string executableName) =>
+        s_executableRejectTokens.Any(token =>
             executableName.Contains(token, StringComparison.OrdinalIgnoreCase)
         );
-    }
 
-    private static int ScoreExecutable(string executablePath, string folderName)
+    private static int ScoreExecutable(string executableName, string folderName)
     {
-        var executableName = Path.GetFileNameWithoutExtension(executablePath);
-
         var bonusCount = s_executableBonusTokens.Count(token =>
             executableName.Contains(token, StringComparison.OrdinalIgnoreCase)
         );
-        var penaltyCount = s_executablePenaltyTokens.Count(token =>
-            executableName.Contains(token, StringComparison.OrdinalIgnoreCase)
-        );
 
-        var score = (bonusCount * 3) - (penaltyCount * 5);
+        var score = bonusCount * 3;
+
+        // A Game Shipping Only A Launcher Still Needs Watching
+        if (executableName.Contains("launcher", StringComparison.OrdinalIgnoreCase))
+            score -= 5;
 
         // Reward A Name Matching Its Folder
         if (executableName.Equals(folderName, StringComparison.OrdinalIgnoreCase))
@@ -157,8 +185,10 @@ internal static partial class GameScanner
     #region Steam
     private static IEnumerable<(string DisplayName, string Root)> DiscoverSteamGames()
     {
-        var primarySteamRoot = s_steamRoot.FirstOrDefault(Directory.Exists);
-        if (primarySteamRoot is null)
+        using var steamKey = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam");
+        var primarySteamRoot = steamKey?.GetValue("SteamPath") as string;
+
+        if (string.IsNullOrWhiteSpace(primarySteamRoot) || !Directory.Exists(primarySteamRoot))
             yield break;
 
         var libraryFoldersPath = Path.Combine(primarySteamRoot, "steamapps", "libraryfolders.vdf");
@@ -426,46 +456,31 @@ internal static partial class GameScanner
     #endregion
 
     #region File System
-    private static IEnumerable<string> EnumerateFilesSafely(string directoryPath, string pattern) =>
-        EnumerateSafely(() =>
-            Directory.EnumerateFiles(directoryPath, pattern, new EnumerationOptions())
-        );
-
-    private static IEnumerable<string> EnumerateDirectoriesSafely(string directoryPath) =>
-        EnumerateSafely(() =>
-            Directory.EnumerateDirectories(directoryPath, "*", new EnumerationOptions())
-        );
-
-    private static IEnumerable<string> EnumerateSafely(Func<IEnumerable<string>> enumerate)
+    private static List<string> EnumerateFilesSafely(string directoryPath, string pattern)
     {
-        IEnumerator<string> enumerator;
-
         try
         {
-            enumerator = enumerate().GetEnumerator();
+            // Enumeration Is Lazy So Building The List Throws Inside The Try
+            return [.. Directory.EnumerateFiles(directoryPath, pattern, new EnumerationOptions())];
         }
         catch
         {
-            yield break;
+            return [];
         }
+    }
 
-        // Enumeration Is Lazy So Missing Roots Throw On MoveNext
-        using (enumerator)
+    private static List<string> EnumerateDirectoriesSafely(string directoryPath)
+    {
+        try
         {
-            while (true)
-            {
-                try
-                {
-                    if (!enumerator.MoveNext())
-                        yield break;
-                }
-                catch
-                {
-                    yield break;
-                }
-
-                yield return enumerator.Current;
-            }
+            return
+            [
+                .. Directory.EnumerateDirectories(directoryPath, "*", new EnumerationOptions()),
+            ];
+        }
+        catch
+        {
+            return [];
         }
     }
     #endregion
@@ -534,11 +549,8 @@ internal static partial class GameScanner
         Check(NormalizeProcessKey("RobloxPlayerBeta"), "robloxplayerbeta");
 
         // The Game Must Outrank Its Launcher
-        var gameScore = ScoreExecutable(
-            @"C:\Games\Fortnite\FortniteClient-Win64-Shipping.exe",
-            "Fortnite"
-        );
-        var launcherScore = ScoreExecutable(@"C:\Games\Fortnite\FortniteLauncher.exe", "Fortnite");
+        var gameScore = ScoreExecutable("FortniteClient-Win64-Shipping", "Fortnite");
+        var launcherScore = ScoreExecutable("FortniteLauncher", "Fortnite");
 
         if (gameScore <= launcherScore)
             throw new InvalidOperationException("SelfTest Failed: ScoreExecutable");
@@ -546,13 +558,13 @@ internal static partial class GameScanner
         // Vetoed Names Must Be Dropped Before Scoring
         var rejected = new[]
         {
-            @"C:\Games\Rust\RustCrashHandler.exe",
-            @"C:\Games\Rust\Uninstall.exe",
-            @"C:\Games\Rust\EasyAntiCheat_Setup.exe",
-            @"C:\Games\Rust\SomeService.exe",
+            "RustCrashHandler",
+            "Uninstall",
+            "EasyAntiCheat_Setup",
+            "SomeService",
         };
 
-        if (!rejected.All(IsRejectedExecutable) || IsRejectedExecutable(@"C:\Games\Rust\Rust.exe"))
+        if (!rejected.All(IsRejectedExecutable) || IsRejectedExecutable("Rust"))
             throw new InvalidOperationException("SelfTest Failed: IsRejectedExecutable");
     }
     #endregion
