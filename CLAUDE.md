@@ -94,7 +94,7 @@ Flow, start to finish:
 2. Settings load from `%AppData%\Adrenalize\settings.ini`, then startup registration is applied to match.
 3. A WinForms message pump starts on a background thread purely to host the tray icon.
 4. `GameScanner.ScanInstalledGameProcessNames()` walks the disk and returns a map of process name to display name. It runs at startup and again on the tray's Rescan Games item.
-5. Console input echo is switched off, then a WMI event watcher subscribes to process creation. A started process whose normalized name is in the game map triggers a reset 30 seconds later.
+5. Console input echo is switched off, then WMI event watchers subscribe to process creation, process deletion and AMD service state. A started or exited game triggers a reset 30 seconds later, a dead AMD service triggers a repair, and Adrenalin exiting on its own is simply started again.
 6. `AmdReset.ExecuteReset()` stops AMD services, kills AMD processes, restarts the services, restarts Adrenalin as the signed-in user through AMD's own logon command, then verifies the result and returns whether the reset actually completed.
 
 ### Files
@@ -115,6 +115,8 @@ Flow, start to finish:
 These are the non-obvious calls. Do not undo them without a reason.
 
 **A reset repairs, it does not just cycle.** The start phase starts every service in `s_requiredServiceNames` that is not Running, not only the ones this reset stopped. That sounds like a detail and was the single worst bug in the app: AMD's services crash on their own after some games exit, and a reset run in that state stopped nothing, therefore started nothing, and still printed Reset Done. The whole point of the tool, repairing a broken stack, silently did not work, and the only way out was killing every AMD process by hand in Task Manager.
+
+**Four things trigger a reset.** A watched game starting, a watched game exiting, an AMD service dying, and a health check one minute after launch that repairs a stack which was already broken before the app started. The exit reset waits the same 30 seconds as the start reset, because AMD tends to fall over shortly after a game closes rather than at the moment it closes. Adrenalin disappearing on its own is handled separately and cheaply: `RestartAdrenalin` starts it again without touching services, since the services are usually fine when only the interface dies.
 
 **AMD service crashes trigger a repair on their own.** A second WMI subscription watches for `AMD External Events Utility` or `AMD Crash Defender Service` going to Stopped and runs a reset when it happens, because this is how the stack breaks in practice: the services die a minute or two after a game exits, Adrenalin is left orphaned, and nothing in Windows brings them back. Events are ignored while a reset is in flight, since a reset stops those services itself, and a two minute cooldown keeps a crash loop from resetting over and over.
 

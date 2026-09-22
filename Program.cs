@@ -18,6 +18,7 @@ internal static class Program
 
     // Kept Alive For The Lifetime Of The Process
     private static ManagementEventWatcher? s_processWatcher;
+    private static ManagementEventWatcher? s_processExitWatcher;
     private static ManagementEventWatcher? s_serviceWatcher;
     private static NativeMethods.WinEventCallback? s_minimizeCallback;
 
@@ -151,6 +152,7 @@ internal static class Program
         DisableConsoleInput();
         StartGameWatcher();
         StartServiceWatcher();
+        _ = CheckStackHealthAsync();
 
         await Task.Delay(Timeout.Infinite).ConfigureAwait(false);
     }
@@ -383,6 +385,16 @@ internal static class Program
             s_processWatcher = new ManagementEventWatcher(startQuery);
             s_processWatcher.EventArrived += OnProcessStarted;
             s_processWatcher.Start();
+
+            var exitQuery = new WqlEventQuery(
+                "__InstanceDeletionEvent",
+                TimeSpan.FromSeconds(1),
+                "TargetInstance isa 'Win32_Process'"
+            );
+
+            s_processExitWatcher = new ManagementEventWatcher(exitQuery);
+            s_processExitWatcher.EventArrived += OnProcessExited;
+            s_processExitWatcher.Start();
         }
         catch
         {
@@ -452,6 +464,67 @@ internal static class Program
         catch { }
     }
 
+    private static void OnProcessExited(object sender, EventArrivedEventArgs eventArguments)
+    {
+        try
+        {
+            var exitedProcess = (ManagementBaseObject)eventArguments.NewEvent["TargetInstance"];
+            var executableName = Path.GetFileNameWithoutExtension(
+                exitedProcess["Name"]?.ToString() ?? string.Empty
+            );
+
+            if (executableName.Equals("RadeonSoftware", StringComparison.OrdinalIgnoreCase))
+            {
+                RestartAdrenalinAfterExit();
+                return;
+            }
+
+            var processName = GameScanner.NormalizeProcessKey(executableName);
+            if (s_games.TryGetValue(processName, out var displayName))
+                _ = TriggerExitResetAsync(displayName);
+        }
+        catch { }
+    }
+
+    private static void RestartAdrenalinAfterExit()
+    {
+        // A Reset Kills Adrenalin Itself, That Is Not A Crash
+        if (Interlocked.CompareExchange(ref s_pendingResetFlag, 0, 0) == 1)
+            return;
+
+        if (DateTime.UtcNow - s_lastRepairUtc < s_repairCooldown)
+            return;
+
+        s_lastRepairUtc = DateTime.UtcNow;
+
+        _ = Task.Run(() =>
+        {
+            Log("Adrenalin Closed, Starting It Again", ConsoleColor.Yellow);
+            AmdReset.RestartAdrenalin();
+            Log("Watching For Games", ConsoleColor.Gray);
+        });
+    }
+
+    private static async Task TriggerExitResetAsync(string displayName)
+    {
+        // AMD Falls Over Shortly After A Game Exits, Let It Settle First
+        await Task.Delay(s_gameStartDelay).ConfigureAwait(false);
+        await TryTriggerResetAsync($"Game Closed: {displayName}", processName: null, isManual: true)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task CheckStackHealthAsync()
+    {
+        // AMD's Own Services Are Still Coming Up Right After A Logon
+        await Task.Delay(TimeSpan.FromMinutes(1)).ConfigureAwait(false);
+
+        if (AmdReset.RequiredServicesRunning())
+            return;
+
+        await TryTriggerResetAsync("Startup Repair", processName: null, isManual: true)
+            .ConfigureAwait(false);
+    }
+
     internal static void TriggerManualReset() =>
         _ = TryTriggerResetAsync("Manual Reset", processName: null, isManual: true);
 
@@ -489,7 +562,9 @@ internal static class Program
                 Log("Reset Done", ConsoleColor.Green);
                 s_trayManager?.ShowBalloonTip(
                     "Adrenalize",
-                    isManual ? "Reset Done" : $"Reset Done For {startedDisplayName}"
+                    isManual
+                        ? $"Reset Done: {startedDisplayName}"
+                        : $"Reset Done For {startedDisplayName}"
                 );
             }
             else

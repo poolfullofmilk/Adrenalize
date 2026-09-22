@@ -72,6 +72,16 @@ internal static class AmdReset
         return VerifyReset();
     }
 
+    internal static bool RequiredServicesRunning() => s_requiredServiceNames.All(IsServiceRunning);
+
+    internal static void RestartAdrenalin()
+    {
+        Log("Starting Adrenalin", ConsoleColor.DarkGreen);
+
+        if (StartAdrenalin())
+            HideAdrenalin();
+    }
+
     private static bool VerifyReset()
     {
         var deadServiceNames = s_requiredServiceNames

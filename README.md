@@ -20,7 +20,7 @@ Adrenalize watches for a game to start, waits until it has finished loading, the
 - Optional: Run On Startup, Minimize To Tray, Start Minimized, Notifications
 
 ## Quick Start
-1. Download And Run Adrenalize_v2.0.exe
+1. Download And Run Adrenalize_v2.2.exe
 2. Accept The UAC Prompt
 3. Wait For The Game Scan To Finish
 4. Launch A Game
