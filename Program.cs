@@ -18,7 +18,12 @@ internal static class Program
 
     // Kept Alive For The Lifetime Of The Process
     private static ManagementEventWatcher? s_processWatcher;
+    private static ManagementEventWatcher? s_serviceWatcher;
     private static NativeMethods.WinEventCallback? s_minimizeCallback;
+
+    // Stops A Crash Loop From Resetting Over And Over
+    private static readonly TimeSpan s_repairCooldown = TimeSpan.FromMinutes(2);
+    private static DateTime s_lastRepairUtc = DateTime.MinValue;
 
     private const string SingleInstanceMutexName = "Global\\Adrenalize_SingleInstance";
     private const string ShowConsoleEventName = "Global\\Adrenalize_ShowConsole";
@@ -145,6 +150,7 @@ internal static class Program
 
         DisableConsoleInput();
         StartGameWatcher();
+        StartServiceWatcher();
 
         await Task.Delay(Timeout.Infinite).ConfigureAwait(false);
     }
@@ -384,6 +390,53 @@ internal static class Program
         }
     }
 
+    private static void StartServiceWatcher()
+    {
+        try
+        {
+            // AMD's Own Services Die On Their Own After Some Games Exit
+            var crashQuery = new WqlEventQuery(
+                "__InstanceModificationEvent",
+                TimeSpan.FromSeconds(5),
+                "TargetInstance ISA 'Win32_Service' "
+                    + "AND TargetInstance.State = 'Stopped' "
+                    + "AND (TargetInstance.Name = 'AMD External Events Utility' "
+                    + "OR TargetInstance.Name = 'AMD Crash Defender Service')"
+            );
+
+            s_serviceWatcher = new ManagementEventWatcher(crashQuery);
+            s_serviceWatcher.EventArrived += OnAmdServiceStopped;
+            s_serviceWatcher.Start();
+        }
+        catch
+        {
+            Log("Service Watcher Failed To Start", ConsoleColor.Red);
+        }
+    }
+
+    private static void OnAmdServiceStopped(object sender, EventArrivedEventArgs eventArguments)
+    {
+        // A Reset Stops These Services Itself, That Is Not A Crash
+        if (Interlocked.CompareExchange(ref s_pendingResetFlag, 0, 0) == 1)
+            return;
+
+        if (DateTime.UtcNow - s_lastRepairUtc < s_repairCooldown)
+            return;
+
+        s_lastRepairUtc = DateTime.UtcNow;
+
+        var serviceName = "AMD Service";
+
+        try
+        {
+            var service = (ManagementBaseObject)eventArguments.NewEvent["TargetInstance"];
+            serviceName = service["DisplayName"]?.ToString() ?? serviceName;
+        }
+        catch { }
+
+        _ = TryTriggerResetAsync($"{serviceName} Crashed", processName: null, isManual: true);
+    }
+
     private static void OnProcessStarted(object sender, EventArrivedEventArgs eventArguments)
     {
         try
@@ -413,7 +466,10 @@ internal static class Program
 
         try
         {
-            Log($"Game Detected: {startedDisplayName}", ConsoleColor.Yellow);
+            Log(
+                isManual ? startedDisplayName : $"Game Detected: {startedDisplayName}",
+                ConsoleColor.Yellow
+            );
 
             if (!isManual)
             {
@@ -431,7 +487,10 @@ internal static class Program
             if (AmdReset.ExecuteReset())
             {
                 Log("Reset Done", ConsoleColor.Green);
-                s_trayManager?.ShowBalloonTip("Adrenalize", $"Reset Done For {startedDisplayName}");
+                s_trayManager?.ShowBalloonTip(
+                    "Adrenalize",
+                    isManual ? "Reset Done" : $"Reset Done For {startedDisplayName}"
+                );
             }
             else
             {

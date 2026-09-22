@@ -39,7 +39,7 @@ internal static class AmdReset
     internal static bool ExecuteReset()
     {
         Log("Stopping AMD Services", ConsoleColor.DarkYellow);
-        var stoppedServiceNames = ControlServices(
+        ControlServices(
             (name, _, state) =>
                 s_requiredServiceNames.Contains(name, StringComparer.OrdinalIgnoreCase)
                 && state.Equals("Running", StringComparison.OrdinalIgnoreCase),
@@ -52,31 +52,31 @@ internal static class AmdReset
         Log("Stopping AMD Processes", ConsoleColor.DarkYellow);
         StopAmdProcesses();
 
-        if (stoppedServiceNames.Count > 0)
-        {
-            Log("Starting AMD Services", ConsoleColor.DarkGreen);
-            ControlServices(
-                (name, _, state) =>
-                    stoppedServiceNames.Contains(name, StringComparer.OrdinalIgnoreCase)
-                    && state.Equals("Stopped", StringComparison.OrdinalIgnoreCase),
-                "StartService",
-                ServiceControllerStatus.Running,
-                TimeSpan.FromSeconds(25),
-                ConsoleColor.Green
-            );
-        }
+        // Start Every Required Service, Not Just The Ones This Reset Stopped
+        Log("Starting AMD Services", ConsoleColor.DarkGreen);
+        ControlServices(
+            (name, _, state) =>
+                s_requiredServiceNames.Contains(name, StringComparer.OrdinalIgnoreCase)
+                && !state.Equals("Running", StringComparison.OrdinalIgnoreCase),
+            "StartService",
+            ServiceControllerStatus.Running,
+            TimeSpan.FromSeconds(25),
+            ConsoleColor.Green
+        );
 
         Log("Starting Adrenalin", ConsoleColor.DarkGreen);
         if (!StartAdrenalin())
             return false;
 
         HideAdrenalin();
-        return VerifyReset(stoppedServiceNames);
+        return VerifyReset();
     }
 
-    private static bool VerifyReset(List<string> serviceNames)
+    private static bool VerifyReset()
     {
-        var deadServiceNames = serviceNames.Where(name => !IsServiceRunning(name)).ToList();
+        var deadServiceNames = s_requiredServiceNames
+            .Where(name => !IsServiceRunning(name))
+            .ToList();
 
         foreach (var serviceName in deadServiceNames)
             LogItem($"{serviceName} Not Running", ConsoleColor.Red);
@@ -101,6 +101,7 @@ internal static class AmdReset
     {
         var loggedProcessIds = new HashSet<int>();
         var skippedProcessIds = new HashSet<int>();
+        var foreignServiceProcessIds = GetForeignServiceProcessIds();
         var deadlineUtc = DateTime.UtcNow.AddSeconds(10);
 
         // Keep Sweeping Until Nothing Comes Back
@@ -116,7 +117,7 @@ internal static class AmdReset
                     if (skippedProcessIds.Contains(processInstance.Id))
                         continue;
 
-                    if (!IsAmdProcess(processInstance))
+                    if (!IsAmdProcess(processInstance, foreignServiceProcessIds))
                     {
                         skippedProcessIds.Add(processInstance.Id);
                         continue;
@@ -157,29 +158,69 @@ internal static class AmdReset
         return $"{processInstance.ProcessName} (PID {processInstance.Id})";
     }
 
-    private static bool IsAmdProcess(Process processInstance)
+    private static bool IsAmdProcess(Process processInstance, HashSet<int> foreignServiceProcessIds)
     {
-        // Never Kill Ourselves
-        if (processInstance.Id == Environment.ProcessId)
+        // Never Kill Ourselves Or A Service Nobody Asked Us To Touch
+        if (
+            processInstance.Id == Environment.ProcessId
+            || foreignServiceProcessIds.Contains(processInstance.Id)
+        )
             return false;
 
         try
         {
-            if (ContainsAmdKeyword(processInstance.ProcessName))
-                return true;
+            var mainModule = processInstance.MainModule;
 
-            // Some AMD Binaries Are Named Differently
-            var executablePath = processInstance.MainModule?.FileName;
-            return executablePath is not null
-                && s_amdExecutablePathMarkers.Any(marker =>
-                    executablePath.Contains(marker, StringComparison.OrdinalIgnoreCase)
-                );
+            if (mainModule is not null)
+            {
+                // The Publisher Is The Only Consistent Signal
+                var company = mainModule.FileVersionInfo.CompanyName ?? string.Empty;
+                if (company.Contains("Advanced Micro Devices", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                if (
+                    s_amdExecutablePathMarkers.Any(marker =>
+                        mainModule.FileName.Contains(marker, StringComparison.OrdinalIgnoreCase)
+                    )
+                )
+                    return true;
+            }
         }
         catch
         {
             // Protected Processes Deny MainModule
-            return false;
         }
+
+        return ContainsAmdKeyword(processInstance.ProcessName);
+    }
+
+    private static HashSet<int> GetForeignServiceProcessIds()
+    {
+        var processIds = new HashSet<int>();
+
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(
+                "SELECT Name, ProcessId FROM Win32_Service WHERE State = 'Running'"
+            );
+
+            foreach (var service in searcher.Get().Cast<ManagementObject>())
+            {
+                using (service)
+                {
+                    var name = service["Name"]?.ToString() ?? string.Empty;
+                    if (s_requiredServiceNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        continue;
+
+                    var processId = Convert.ToInt32(service["ProcessId"] ?? 0);
+                    if (processId > 0)
+                        processIds.Add(processId);
+                }
+            }
+        }
+        catch { }
+
+        return processIds;
     }
     #endregion
 
