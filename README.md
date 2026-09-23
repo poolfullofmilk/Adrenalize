@@ -1,5 +1,7 @@
 # Adrenalize
 
+> Archived. Replaced By [Adrenaless](https://github.com/poolfullofmilk/Adrenaless), A One Shot Script That Stops AMD Hooking Into Your Games
+
 Keeps AMD Adrenalin Healthy While You Game And Fixes It In One Click When It Breaks
 
 ![Adrenalize](Screenshot.png)
