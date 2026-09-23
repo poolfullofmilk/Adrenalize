@@ -17,7 +17,6 @@ internal static class Program
     private static Dictionary<string, string> s_games = [];
 
     // Kept Alive For The Lifetime Of The Process
-    private static ManagementEventWatcher? s_processWatcher;
     private static ManagementEventWatcher? s_processExitWatcher;
     private static ManagementEventWatcher? s_serviceWatcher;
     private static NativeMethods.WinEventCallback? s_minimizeCallback;
@@ -29,8 +28,8 @@ internal static class Program
     private const string SingleInstanceMutexName = "Global\\Adrenalize_SingleInstance";
     private const string ShowConsoleEventName = "Global\\Adrenalize_ShowConsole";
 
-    // Long Enough For Any Game To Finish Loading
-    private static readonly TimeSpan s_gameStartDelay = TimeSpan.FromSeconds(30);
+    // AMD Falls Over Shortly After A Game Exits, Not At The Moment It Does
+    private static readonly TimeSpan s_gameExitDelay = TimeSpan.FromSeconds(30);
 
     internal static UserSettings Settings { get; private set; } = new();
 
@@ -105,6 +104,7 @@ internal static class Program
 
         Settings = UserSettings.Load();
         ApplyStartupRegistration();
+        AmdReset.EnsureCaptureDisabled();
 
         // Dropping Close Makes The X Hide Instantly
         if (Settings.MinimizeToTray)
@@ -218,7 +218,7 @@ internal static class Program
 
     private static void DisableConsoleInput()
     {
-        // The Console Only Reports Status, Typing Must Not Echo
+        // Status Only, No Echo And No Click That Freezes Output
         var inputHandle = NativeMethods.GetStdHandle(NativeMethods.StandardInputHandle);
         if (inputHandle == IntPtr.Zero || inputHandle == -1)
             return;
@@ -227,7 +227,14 @@ internal static class Program
         {
             NativeMethods.SetConsoleMode(
                 inputHandle,
-                mode & ~(NativeMethods.EnableEchoInput | NativeMethods.EnableLineInput)
+                (
+                    mode
+                    & ~(
+                        NativeMethods.EnableEchoInput
+                        | NativeMethods.EnableLineInput
+                        | NativeMethods.EnableQuickEditMode
+                    )
+                ) | NativeMethods.EnableExtendedFlags
             );
         }
     }
@@ -375,17 +382,7 @@ internal static class Program
 
         try
         {
-            // WMI Reports Every Process Start, No Polling Needed
-            var startQuery = new WqlEventQuery(
-                "__InstanceCreationEvent",
-                TimeSpan.FromSeconds(1),
-                "TargetInstance isa 'Win32_Process'"
-            );
-
-            s_processWatcher = new ManagementEventWatcher(startQuery);
-            s_processWatcher.EventArrived += OnProcessStarted;
-            s_processWatcher.Start();
-
+            // WMI Reports Every Process Exit, No Polling Needed
             var exitQuery = new WqlEventQuery(
                 "__InstanceDeletionEvent",
                 TimeSpan.FromSeconds(1),
@@ -446,22 +443,7 @@ internal static class Program
         }
         catch { }
 
-        _ = TryTriggerResetAsync($"{serviceName} Crashed", processName: null, isManual: true);
-    }
-
-    private static void OnProcessStarted(object sender, EventArrivedEventArgs eventArguments)
-    {
-        try
-        {
-            var startedProcess = (ManagementBaseObject)eventArguments.NewEvent["TargetInstance"];
-            var processName = GameScanner.NormalizeProcessKey(
-                Path.GetFileNameWithoutExtension(startedProcess["Name"]?.ToString() ?? string.Empty)
-            );
-
-            if (s_games.TryGetValue(processName, out var displayName))
-                _ = TryTriggerResetAsync(displayName, processName, isManual: false);
-        }
-        catch { }
+        _ = TryTriggerResetAsync($"{serviceName} Crashed");
     }
 
     private static void OnProcessExited(object sender, EventArrivedEventArgs eventArguments)
@@ -481,7 +463,7 @@ internal static class Program
 
             var processName = GameScanner.NormalizeProcessKey(executableName);
             if (s_games.TryGetValue(processName, out var displayName))
-                _ = TriggerExitResetAsync(displayName);
+                _ = CheckAfterGameExitAsync(displayName);
         }
         catch { }
     }
@@ -505,12 +487,18 @@ internal static class Program
         });
     }
 
-    private static async Task TriggerExitResetAsync(string displayName)
+    private static async Task CheckAfterGameExitAsync(string displayName)
     {
-        // AMD Falls Over Shortly After A Game Exits, Let It Settle First
-        await Task.Delay(s_gameStartDelay).ConfigureAwait(false);
-        await TryTriggerResetAsync($"Game Closed: {displayName}", processName: null, isManual: true)
-            .ConfigureAwait(false);
+        await Task.Delay(s_gameExitDelay).ConfigureAwait(false);
+
+        // Only Repair What Is Actually Broken, A Healthy Stack Is Left Alone
+        if (AmdReset.IsHealthy())
+        {
+            Log($"Game Closed: {displayName}, AMD Healthy", ConsoleColor.DarkGray);
+            return;
+        }
+
+        await TryTriggerResetAsync($"Game Closed: {displayName}, AMD Broken").ConfigureAwait(false);
     }
 
     private static async Task CheckStackHealthAsync()
@@ -518,54 +506,26 @@ internal static class Program
         // AMD's Own Services Are Still Coming Up Right After A Logon
         await Task.Delay(TimeSpan.FromMinutes(1)).ConfigureAwait(false);
 
-        if (AmdReset.RequiredServicesRunning())
-            return;
-
-        await TryTriggerResetAsync("Startup Repair", processName: null, isManual: true)
-            .ConfigureAwait(false);
+        if (!AmdReset.IsHealthy())
+            await TryTriggerResetAsync("Startup Repair").ConfigureAwait(false);
     }
 
-    internal static void TriggerManualReset() =>
-        _ = TryTriggerResetAsync("Manual Reset", processName: null, isManual: true);
+    internal static void TriggerManualReset() => _ = TryTriggerResetAsync("Manual Reset");
 
-    private static async Task TryTriggerResetAsync(
-        string startedDisplayName,
-        string? processName,
-        bool isManual
-    )
+    private static async Task TryTriggerResetAsync(string reason)
     {
         if (Interlocked.Exchange(ref s_pendingResetFlag, 1) == 1)
             return;
 
         try
         {
-            Log(
-                isManual ? startedDisplayName : $"Game Detected: {startedDisplayName}",
-                ConsoleColor.Yellow
-            );
+            Log(reason, ConsoleColor.Yellow);
 
-            if (!isManual)
-            {
-                await Task.Delay(s_gameStartDelay).ConfigureAwait(false);
-
-                // Abort If The Game Closed During The Delay
-                if (!IsGameRunning(processName))
-                {
-                    Log("Game Closed Before Reset", ConsoleColor.DarkYellow);
-                    Log("Watching For Games", ConsoleColor.Gray);
-                    return;
-                }
-            }
-
-            if (AmdReset.ExecuteReset())
+            // Never Run A Reset On The Tray Or Event Thread That Asked For It
+            if (await Task.Run(AmdReset.ExecuteReset).ConfigureAwait(false))
             {
                 Log("Reset Done", ConsoleColor.Green);
-                s_trayManager?.ShowBalloonTip(
-                    "Adrenalize",
-                    isManual
-                        ? $"Reset Done: {startedDisplayName}"
-                        : $"Reset Done For {startedDisplayName}"
-                );
+                s_trayManager?.ShowBalloonTip("Adrenalize", $"Reset Done: {reason}");
             }
             else
             {
@@ -579,27 +539,6 @@ internal static class Program
         {
             Interlocked.Exchange(ref s_pendingResetFlag, 0);
         }
-    }
-
-    private static bool IsGameRunning(string? processName)
-    {
-        if (processName is null)
-            return true;
-
-        try
-        {
-            foreach (var processInstance in Process.GetProcesses())
-            {
-                using (processInstance)
-                {
-                    if (GameScanner.NormalizeProcessKey(processInstance.ProcessName) == processName)
-                        return true;
-                }
-            }
-        }
-        catch { }
-
-        return false;
     }
     #endregion
 }

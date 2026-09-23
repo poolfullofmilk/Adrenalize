@@ -22,6 +22,8 @@ internal static partial class NativeMethods
     internal const int StandardInputHandle = -10;
     internal const uint EnableLineInput = 0x0002;
     internal const uint EnableEchoInput = 0x0004;
+    internal const uint EnableQuickEditMode = 0x0040;
+    internal const uint EnableExtendedFlags = 0x0080;
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     [return: MarshalAs(UnmanagedType.Bool)]

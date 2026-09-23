@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Management;
 using System.Runtime.Versioning;
 using System.ServiceProcess;
+using Microsoft.Win32;
 using Microsoft.Win32.TaskScheduler;
 using static Adrenalize.Logger;
 
@@ -12,6 +13,9 @@ internal static class AmdReset
 {
     // AMD's Own Command Line, Used To Start And Hide Adrenalin
     private const string AdrenalinCommandPath = @"C:\Program Files\AMD\CNext\CNext\cncmd.exe";
+
+    // Record And Stream Injects A Capture Hook Into Every Game
+    private const string CaptureSettingsKey = @"Software\AMD\DVR";
 
     // Temporary Task Used To Drop Elevation
     private const string LaunchTaskName = "AdrenalizeLaunch";
@@ -72,7 +76,26 @@ internal static class AmdReset
         return VerifyReset();
     }
 
-    internal static bool RequiredServicesRunning() => s_requiredServiceNames.All(IsServiceRunning);
+    internal static bool IsHealthy() =>
+        s_requiredServiceNames.All(IsServiceRunning) && GetAdrenalinProcessIds().Count > 0;
+
+    internal static void EnsureCaptureDisabled()
+    {
+        try
+        {
+            using var captureKey = Registry.CurrentUser.OpenSubKey(
+                CaptureSettingsKey,
+                writable: true
+            );
+
+            if (captureKey?.GetValue("DvrEnabled") is int enabled && enabled != 0)
+            {
+                captureKey.SetValue("DvrEnabled", 0, RegistryValueKind.DWord);
+                Log("AMD Record And Stream Turned Off", ConsoleColor.Cyan);
+            }
+        }
+        catch { }
+    }
 
     internal static void RestartAdrenalin()
     {
@@ -341,6 +364,9 @@ internal static class AmdReset
             Log("Adrenalin Not Found", ConsoleColor.Red);
             return false;
         }
+
+        // Adrenalin Reads This Once At Startup, So Set It Before Every Launch
+        EnsureCaptureDisabled();
 
         // The Logon Command Starts Adrenalin Without Ever Drawing A Window
         if (!RunAsSignedInUser(AdrenalinCommandPath, "startwithdelay"))
